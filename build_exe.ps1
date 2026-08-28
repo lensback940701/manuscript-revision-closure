@@ -41,6 +41,9 @@ $Receipt = [ordered]@{
     sha256 = $Hash.Hash
     standalone_version = '0.6.1'
     skill_version = '0.2.1'
+    runtime_transaction_version = 'mrc-runtime-transaction-1.0'
+    presentation_source_contract_version = 'mrc-presentation-source-1.0'
+    presentation_repair_contract_version = 'mrc-presentation-repair-1.0'
     interpretation_contract_version = 'mrc-public-interpretation-2.0'
     intake_contract_version = 'mrc-manuscript-intake-1.0'
     coverage_contract_version = 'mrc-whole-manuscript-coverage-1.0'
@@ -57,6 +60,7 @@ $Hash.Hash | Set-Content -LiteralPath (Join-Path $Release 'ManuscriptRevisionClo
 Copy-Item -LiteralPath (Join-Path $ProjectRoot 'STANDALONE.zh-CN.md') -Destination $Release -Force
 Copy-Item -LiteralPath (Join-Path $ProjectRoot 'docs\PORTABILITY.zh-CN.md') -Destination $Release -Force
 Copy-Item -LiteralPath (Join-Path $ProjectRoot 'docs\HARNESS_EQUIVALENCE_AUDIT.zh-CN.md') -Destination (Join-Path $Release 'HARNESS_AUDIT.zh-CN.md') -Force
+Copy-Item -LiteralPath (Join-Path $ProjectRoot 'docs\PRESENTATION_TRANSACTION_REPAIR.zh-CN.md') -Destination (Join-Path $Release 'PRESENTATION_TRANSACTION_REPAIR.zh-CN.md') -Force
 Copy-Item -LiteralPath (Join-Path $ProjectRoot 'standalone\AGENT.md') -Destination (Join-Path $Release 'INTERPRETATION_AGENT.md') -Force
 Copy-Item -LiteralPath (Join-Path $ProjectRoot 'LICENSE') -Destination $Release -Force
 Copy-Item -LiteralPath (Join-Path $ProjectRoot 'THIRD_PARTY_NOTICES.md') -Destination $Release -Force
