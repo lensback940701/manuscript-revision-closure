@@ -102,7 +102,7 @@ GUI 还会按 API 返回的实际 token usage 和官方价格页估算本次费�
 安全边界见 [`STANDALONE.zh-CN.md`](STANDALONE.zh-CN.md)。Standalone 版本与
 Skill 版本分别管理，不改变本 Skill 的 `0.2.1` 合同版本。
 
-Standalone 0.6.1 使用可见的多模型下拉框，并按 DeepSeek、Kimi、Gemini
+Standalone 0.6.2 使用可见的多模型下拉框，并按 DeepSeek、Kimi、Gemini
 具体模型的官方能力动态提供思考开关或强度选项；不支持的组合在调用前拒绝。
 核心判断和可选中文解读均使用结构化输出；Gemini 与 Kimi 额外提交精确 JSON Schema，
 并在本地只接受唯一完整对象及精确十一键合同。解读格式失败时仍记录该次调用的
@@ -111,6 +111,7 @@ DeepSeek 384K、Kimi 128K、Gemini 64K 的高余量，并明确识别长度截�
 Gemini 以美元官方价为原币，再用带日期的 ECB USD/CNY 参考汇率显示双币种估算。
 核心判断采用两次绑定调用：十维整稿覆盖 pass 与重新读取全文的 root-cause adjudication pass；
 coverage 的 canonical SHA-256、候选维度、hold 和保护不变量由本地 contradiction gate 独立复核。
+0.6.2 在该门通过后先冻结 canonical machine state，再验证公开自然语言。中文展示缺陷最多触发一次不含稿件的 schema-bound presentation-only request，且该请求不自动重试；失败只形成可恢复 presentation HOLD，不清除机器裁决或 usage。受保护事项的 authoritative source identity 与本地化 display text 分开绑定，每次运行只发布一个幂等 terminal event。
 Kimi 覆盖阶段默认等待 300 秒，根因裁决和中文解读默认等待 900 秒；read/socket timeout
 不再自动重发，只有明确的 429、502、503、504 才有限重试，避免未知服务端状态下重复计费。
 

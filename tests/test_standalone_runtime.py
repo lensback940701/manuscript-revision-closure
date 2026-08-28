@@ -505,7 +505,7 @@ class StandaloneRuntimeTests(unittest.TestCase):
                 CompletionResult(
                     content=json.dumps(ADJUDICATION_STATE | {"extra": True}),
                     model="kimi-k2.6",
-                    usage={},
+                    usage={"prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7},
                 ),
             )
         )
@@ -514,15 +514,20 @@ class StandaloneRuntimeTests(unittest.TestCase):
         ), patch("standalone.assessor.ChatCompletionClient.complete", side_effect=completions) as mocked:
             path = Path(directory) / "paper.md"
             path.write_text(long_manuscript(), encoding="utf-8")
-            with self.assertRaises(ModelContractError):
-                analyze_manuscript(
-                    RunOptions(
-                        manuscript_path=path,
-                        provider="kimi",
-                        confirm_complete_current_manuscript=True,
-                    )
+            result = analyze_manuscript(
+                RunOptions(
+                    manuscript_path=path,
+                    provider="kimi",
+                    confirm_complete_current_manuscript=True,
                 )
-            self.assertEqual(2, mocked.call_count)
+            )
+        self.assertEqual(2, mocked.call_count)
+        runtime = result.as_dict()["runtime"]
+        self.assertEqual("UNASSESSED", result.closure_card["Verdict"])
+        self.assertEqual("HOLD", runtime["machine_status"])
+        self.assertEqual("SUCCEEDED", runtime["machine_provider_outcome"])
+        self.assertEqual(7, runtime["usage_calls"][1]["total_tokens"])
+        self.assertEqual(0, runtime["presentation_repair_call_count"])
 
     def test_stable_prior_stop_receipt_skips_provider(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -39,8 +39,12 @@ $Receipt = [ordered]@{
     filename = [IO.Path]::GetFileName($Exe)
     bytes = (Get-Item -LiteralPath $Exe).Length
     sha256 = $Hash.Hash
-    standalone_version = '0.6.1'
+    standalone_version = '0.6.2'
     skill_version = '0.2.1'
+    presentation_transaction_version = 'mrc-presentation-transaction-1.0'
+    presentation_source_contract_version = 'mrc-presentation-source-2.0'
+    presentation_repair_contract_version = 'mrc-presentation-repair-2.0'
+    language_contract_version = 'mrc-zh-display-language-1.0'
     interpretation_contract_version = 'mrc-public-interpretation-2.0'
     intake_contract_version = 'mrc-manuscript-intake-1.0'
     coverage_contract_version = 'mrc-whole-manuscript-coverage-1.0'
@@ -57,6 +61,7 @@ $Hash.Hash | Set-Content -LiteralPath (Join-Path $Release 'ManuscriptRevisionClo
 Copy-Item -LiteralPath (Join-Path $ProjectRoot 'STANDALONE.zh-CN.md') -Destination $Release -Force
 Copy-Item -LiteralPath (Join-Path $ProjectRoot 'docs\PORTABILITY.zh-CN.md') -Destination $Release -Force
 Copy-Item -LiteralPath (Join-Path $ProjectRoot 'docs\HARNESS_EQUIVALENCE_AUDIT.zh-CN.md') -Destination (Join-Path $Release 'HARNESS_AUDIT.zh-CN.md') -Force
+Copy-Item -LiteralPath (Join-Path $ProjectRoot 'docs\NATIVE_PRESENTATION_TRANSACTION_AUDIT.zh-CN.md') -Destination (Join-Path $Release 'NATIVE_PRESENTATION_TRANSACTION_AUDIT.zh-CN.md') -Force
 Copy-Item -LiteralPath (Join-Path $ProjectRoot 'standalone\AGENT.md') -Destination (Join-Path $Release 'INTERPRETATION_AGENT.md') -Force
 Copy-Item -LiteralPath (Join-Path $ProjectRoot 'LICENSE') -Destination $Release -Force
 Copy-Item -LiteralPath (Join-Path $ProjectRoot 'THIRD_PARTY_NOTICES.md') -Destination $Release -Force

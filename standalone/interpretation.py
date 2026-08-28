@@ -304,6 +304,23 @@ def generate_interpretation(
     transient_retries: int = 2,
     on_attempt: Callable[[int], None] | None = None,
 ) -> InterpretationResult:
+    runtime = public_result.get("runtime", {}) if isinstance(public_result, Mapping) else {}
+    status = runtime.get("status", {}) if isinstance(runtime, Mapping) else {}
+    terminal_status = status.get("terminal_status", runtime.get("terminal_status")) if isinstance(status, Mapping) else runtime.get("terminal_status")
+    presentation_status = status.get("presentation_status", runtime.get("presentation_status")) if isinstance(status, Mapping) else runtime.get("presentation_status")
+    if terminal_status == "HOLD" or presentation_status == "HOLD":
+        raise InterpretationContractError(
+            "core result is on presentation HOLD; optional interpretation was not sent",
+            runtime={
+                "provider": provider,
+                "model": model,
+                "reasoning_option": reasoning_option or "default",
+                "attempts": 0,
+                "usage": {},
+                "contract_version": INTERPRETATION_CONTRACT_VERSION,
+                "status": "not_called_presentation_hold",
+            },
+        )
     document = read_document(manuscript_path)
     if document.artifact_sha256 != expected_artifact_sha256:
         raise InterpretationContractError("manuscript changed after the core assessment")

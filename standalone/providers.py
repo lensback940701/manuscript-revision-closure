@@ -26,16 +26,19 @@ _STAGE_TIMEOUT_SECONDS: dict[str, dict[str, float]] = {
     "deepseek": {
         "coverage": DEFAULT_REQUEST_TIMEOUT_SECONDS,
         "adjudication": DEFAULT_REQUEST_TIMEOUT_SECONDS,
+        "presentation_repair": DEFAULT_REQUEST_TIMEOUT_SECONDS,
         "interpretation": DEFAULT_REQUEST_TIMEOUT_SECONDS,
     },
     "kimi": {
         "coverage": 300.0,
         "adjudication": 900.0,
+        "presentation_repair": 900.0,
         "interpretation": 900.0,
     },
     "gemini": {
         "coverage": DEFAULT_REQUEST_TIMEOUT_SECONDS,
         "adjudication": DEFAULT_REQUEST_TIMEOUT_SECONDS,
+        "presentation_repair": DEFAULT_REQUEST_TIMEOUT_SECONDS,
         "interpretation": DEFAULT_REQUEST_TIMEOUT_SECONDS,
     },
 }

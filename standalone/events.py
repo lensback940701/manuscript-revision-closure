@@ -1,7 +1,8 @@
-"""Small, bounded event stream inspired by Codex exec JSONL events.
+"""Privacy-bounded lifecycle events with one terminal owner per request.
 
-Only lifecycle metadata is emitted. Manuscript text, model output, prompts, and
-credentials are deliberately excluded from every event payload.
+Only lifecycle metadata is emitted. Manuscript text, model output, prompts,
+private coverage rows, hidden diagnostics, credentials, and raw provider
+responses are deliberately excluded from every event payload.
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ class RunPhase(str, Enum):
     READING = "reading"
     REQUESTING_MODEL = "requesting_model"
     VALIDATING = "validating"
+    PRESENTING = "presenting"
     COMPLETED = "completed"
     FAILED = "failed"
 
@@ -33,7 +35,12 @@ LEGAL_TRANSITIONS = {
         RunPhase.FAILED,
     },
     RunPhase.REQUESTING_MODEL: {RunPhase.VALIDATING, RunPhase.FAILED},
-    RunPhase.VALIDATING: {RunPhase.COMPLETED, RunPhase.FAILED},
+    RunPhase.VALIDATING: {
+        RunPhase.PRESENTING,
+        RunPhase.COMPLETED,
+        RunPhase.FAILED,
+    },
+    RunPhase.PRESENTING: {RunPhase.COMPLETED, RunPhase.FAILED},
     RunPhase.COMPLETED: set(),
     RunPhase.FAILED: set(),
 }
@@ -49,20 +56,33 @@ def _now() -> str:
 
 @dataclass(slots=True)
 class EventSink:
-    """Emit privacy-bounded lifecycle events to memory, callback, or JSONL."""
+    """Emit one canonical lifecycle stream and at most one terminal event."""
 
     callback: Callable[[dict[str, Any]], None] | None = None
     jsonl_path: Path | None = None
     thread_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    request_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     phase: RunPhase = RunPhase.CREATED
     events: list[dict[str, Any]] = field(default_factory=list)
     _item_counter: int = 0
-    _lock: threading.Lock = field(default_factory=threading.Lock)
+    _started: bool = False
+    _terminal_event: dict[str, Any] | None = None
+    _terminal_event_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    _lock: Any = field(default_factory=threading.RLock)
+
+    @property
+    def terminal_emitted(self) -> bool:
+        return self._terminal_event is not None
+
+    @property
+    def terminal_event_id(self) -> str | None:
+        return self._terminal_event_id if self._terminal_event is not None else None
 
     def emit(self, event_type: str, **payload: Any) -> dict[str, Any]:
         event = {
             "type": event_type,
             "thread_id": self.thread_id,
+            "request_id": self.request_id,
             "timestamp": _now(),
             **payload,
         }
@@ -77,10 +97,16 @@ class EventSink:
         return event
 
     def start(self) -> None:
+        with self._lock:
+            if self._started:
+                return
+            self._started = True
         self.emit("thread.started", phase=self.phase.value)
         self.emit("turn.started", phase=self.phase.value)
 
     def transition(self, target: RunPhase) -> None:
+        if target == self.phase:
+            return
         if target not in LEGAL_TRANSITIONS[self.phase]:
             raise InvalidTransition(f"illegal runtime transition: {self.phase.value} -> {target.value}")
         self.phase = target
@@ -97,22 +123,43 @@ class EventSink:
         )
         return item_id
 
-    def item_completed(self, item_id: str, item_type: str, status: str = "completed", **metadata: Any) -> None:
+    def item_completed(
+        self,
+        item_id: str,
+        item_type: str,
+        status: str = "completed",
+        **metadata: Any,
+    ) -> None:
         self.emit(
             "item.completed",
             phase=self.phase.value,
             item={"id": item_id, "type": item_type, "status": status, **metadata},
         )
 
-    def complete(self, **metadata: Any) -> None:
-        self.transition(RunPhase.COMPLETED)
-        self.emit("turn.completed", phase=self.phase.value, **metadata)
+    def _terminal(self, event_type: str, **payload: Any) -> dict[str, Any]:
+        # The re-entrant lock makes terminal ownership atomic even if two
+        # callers race or a synchronous callback observes the terminal event.
+        with self._lock:
+            if self._terminal_event is not None:
+                return dict(self._terminal_event)
+            target = RunPhase.COMPLETED if event_type == "turn.completed" else RunPhase.FAILED
+            if self.phase not in {RunPhase.COMPLETED, RunPhase.FAILED}:
+                self.transition(target)
+            event = self.emit(
+                event_type,
+                phase=self.phase.value,
+                terminal_event_id=self._terminal_event_id,
+                **payload,
+            )
+            self._terminal_event = dict(event)
+            return dict(event)
 
-    def fail(self, error_code: str, message: str) -> None:
-        if self.phase not in {RunPhase.COMPLETED, RunPhase.FAILED}:
-            self.transition(RunPhase.FAILED)
-        self.emit(
+    def complete(self, **metadata: Any) -> dict[str, Any]:
+        return self._terminal("turn.completed", **metadata)
+
+    def fail(self, error_code: str, message: str, **metadata: Any) -> dict[str, Any]:
+        return self._terminal(
             "turn.failed",
-            phase=self.phase.value,
             error={"code": error_code, "message": message},
+            **metadata,
         )

@@ -8,6 +8,7 @@ import secrets
 import threading
 import time
 import urllib.parse
+import uuid
 import webbrowser
 from copy import deepcopy
 from dataclasses import dataclass, field
@@ -51,7 +52,8 @@ PHASE_MESSAGES = {
     "reading": "读取并核对不可变稿件",
     "requesting_model": "等待模型 API 返回受限分类",
     "validating": "执行本地确定性合同校验",
-    "completed": "核心裁决完成",
+    "presenting": "执行受限公开展示校验或修复",
+    "completed": "核心裁决事务完成",
     "failed": "运行失败",
 }
 ITEM_MESSAGES = {
@@ -60,6 +62,7 @@ ITEM_MESSAGES = {
     "coverage_request": "执行整稿十维覆盖 pass",
     "adjudication_request": "执行独立 root-cause adjudication pass",
     "contradiction_gate": "执行跨阶段矛盾与哈希绑定门",
+    "presentation_repair": "执行一次受限公开文本修复",
     "receipt_reuse": "核验并复用既有最小收据",
 }
 
@@ -86,10 +89,13 @@ class GuiState:
     result: dict[str, Any] | None = None
     error: str | None = None
     interpretation_error: str | None = None
+    presentation_error: str | None = None
+    request_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     selected_manuscript: str = ""
     selected_prior_receipt: str = ""
     timeline: list[dict[str, Any]] = field(default_factory=list)
     _started_at: float | None = None
+    _seen_terminal_keys: set[str] = field(default_factory=set)
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
     def snapshot(self) -> dict[str, Any]:
@@ -102,6 +108,8 @@ class GuiState:
                 "result": deepcopy(self.result),
                 "error": self.error,
                 "interpretation_error": self.interpretation_error,
+                "presentation_error": self.presentation_error,
+                "request_id": self.request_id,
                 "timeline": deepcopy(self.timeline),
                 "selected_manuscript": self.selected_manuscript,
                 "selected_prior_receipt": self.selected_prior_receipt,
@@ -127,6 +135,9 @@ class GuiState:
             self.result = None
             self.error = None
             self.interpretation_error = None
+            self.presentation_error = None
+            self.request_id = str(uuid.uuid4())
+            self._seen_terminal_keys.clear()
             self.timeline = []
             self._started_at = time.monotonic()
             self._append_locked("starting", "已接收请求，开始只读处理", {})
@@ -153,38 +164,43 @@ class GuiState:
 
     def on_event(self, event: dict[str, Any]) -> None:
         with self._lock:
-            self.phase = str(event.get("phase") or event.get("type") or "running")
-            item = event.get("item")
             event_type = str(event.get("type", "running"))
+            request_id = str(event.get("request_id") or self.request_id)
+            terminal_event_id = str(event.get("terminal_event_id") or "")
+            if event_type in {"turn.completed", "turn.failed"}:
+                terminal_key = f"{request_id}:{terminal_event_id}"
+                if terminal_key in self._seen_terminal_keys:
+                    return
+                self._seen_terminal_keys.add(terminal_key)
+
+            event_phase = str(event.get("phase") or event_type or "running")
+            item = event.get("item")
             details: dict[str, Any] = {}
             if isinstance(item, dict):
+                self.phase = event_phase
                 item_type = str(item.get("type", ""))
                 base = ITEM_MESSAGES.get(item_type, str(item.get("label") or item_type or event_type))
                 suffix = "开始" if event_type == "item.started" else "完成"
                 message = f"{base}：{suffix}"
                 for key in (
-                    "provider",
-                    "model",
-                    "reasoning_option",
-                    "attempts",
-                    "usage",
-                    "character_count",
-                    "verdict",
-                    "status",
-                    "complete_structure",
-                    "heading_count",
-                    "coverage_complete",
-                    "dimension_count",
-                    "coverage_binding",
-                    "contradiction_gate_passed",
-                    "timeout_seconds",
+                    "provider", "model", "reasoning_option", "attempts", "usage",
+                    "character_count", "verdict", "status", "complete_structure",
+                    "heading_count", "coverage_complete", "dimension_count",
+                    "coverage_binding", "contradiction_gate_passed", "timeout_seconds",
+                    "provider_outcome", "machine_state_parity",
                 ):
                     if key in item:
                         details[key] = item[key]
             elif event_type == "phase.changed":
+                self.phase = event_phase
                 message = PHASE_MESSAGES.get(self.phase, self.phase)
             elif event_type == "provider.attempt":
-                stage_labels = {"coverage": "整稿覆盖", "adjudication": "根因裁决"}
+                self.phase = event_phase
+                stage_labels = {
+                    "coverage": "整稿覆盖",
+                    "adjudication": "根因裁决",
+                    "presentation_repair": "公开文本修复",
+                }
                 stage = str(event.get("stage") or "model")
                 message = (
                     f"已向 {event.get('provider', 'provider')} API 发出"
@@ -197,11 +213,37 @@ class GuiState:
                     "reasoning_option": event.get("reasoning_option"),
                     "attempt": event.get("attempt"),
                     "timeout_seconds": event.get("timeout_seconds"),
+                    "max_transient_retries": event.get("max_transient_retries"),
                 }
             elif event_type == "turn.completed":
-                message = "核心裁决已完成"
-                details = {key: event[key] for key in ("verdict", "usage") if key in event}
+                self.phase = "core_completed"
+                message = "核心裁决与公开展示事务已形成唯一终态"
+                details = {
+                    key: event[key]
+                    for key in (
+                        "verdict", "usage", "machine_status", "presentation_status",
+                        "terminal_status", "recoverability",
+                    )
+                    if key in event
+                }
+                details["terminal_event_id"] = terminal_event_id
+                details["request_id"] = request_id
+            elif event_type == "turn.failed":
+                error = event.get("error") if isinstance(event.get("error"), dict) else {}
+                public_error = str(error.get("message") or "运行失败 / Run failed")
+                self.busy = False
+                self.phase = "failed"
+                self.error = public_error
+                self.result = None
+                message = "运行失败 / Run failed"
+                details = {
+                    "error": public_error,
+                    "error_code": error.get("code"),
+                    "terminal_event_id": terminal_event_id,
+                    "request_id": request_id,
+                }
             else:
+                self.phase = event_phase
                 message = PHASE_MESSAGES.get(self.phase, event_type)
             self.message = message
             self._append_locked(self.phase, message, details)
@@ -211,7 +253,7 @@ class GuiState:
             self.result = deepcopy(result)
             self._append_locked(
                 "core_completed",
-                "核心 Closure Card 已生成，正在准备中文解读",
+                "核心 Closure Card 已生成，正在处理后续公开交付状态",
                 {"verdict": result.get("closure_card", {}).get("Verdict")},
             )
 
@@ -229,7 +271,21 @@ class GuiState:
             self.phase = "completed"
             self.message = "核心判断与中文解读均已完成" if interpretation else "核心判断已完成"
             self.error = None
+            self.presentation_error = None
             self._append_locked(self.phase, self.message, {})
+
+    def presentation_hold(self, message: str) -> None:
+        with self._lock:
+            self.busy = False
+            self.phase = "completed_with_presentation_hold"
+            self.message = "机器裁决已完成；公开展示处于可恢复 HOLD"
+            self.error = None
+            self.presentation_error = message
+            self._append_locked(
+                self.phase,
+                self.message,
+                {"presentation_hold": True, "error": message},
+            )
 
     def interpretation_fail(self, message: str) -> None:
         with self._lock:
@@ -441,17 +497,12 @@ class GuiRequestHandler(BaseHTTPRequestHandler):
 
 
 def _analysis_worker(state: GuiState, payload: dict[str, Any]) -> None:
+    sink = EventSink(callback=state.on_event, request_id=state.request_id)
+    sink.start()
     try:
         allowed = {
-            "manuscript_path",
-            "provider",
-            "model",
-            "reasoning_option",
-            "language",
-            "identity",
-            "confirmed_complete",
-            "prior_receipt_path",
-            "generate_interpretation",
+            "manuscript_path", "provider", "model", "reasoning_option", "language",
+            "identity", "confirmed_complete", "prior_receipt_path", "generate_interpretation",
         }
         if set(payload).difference(allowed):
             raise ValueError("analysis request contains unknown fields")
@@ -489,21 +540,30 @@ def _analysis_worker(state: GuiState, payload: dict[str, Any]) -> None:
         selected_reasoning = validate_reasoning_option(provider, selected_model_for_contract, reasoning)
         result = analyze_manuscript(
             RunOptions(
-                manuscript_path=Path(manuscript),
-                provider=provider,
-                model=selected_model,
-                reasoning_option=selected_reasoning,
-                output_language=language,
+                manuscript_path=Path(manuscript), provider=provider, model=selected_model,
+                reasoning_option=selected_reasoning, output_language=language,
                 manuscript_identity=selected_identity,
-                confirm_complete_current_manuscript=confirmed,
-                prior_receipt=prior,
+                confirm_complete_current_manuscript=confirmed, prior_receipt=prior,
             ),
-            event_sink=EventSink(callback=state.on_event),
+            event_sink=sink,
         )
         public_result = result.as_dict()
         state.core_ready(public_result)
     except Exception as exc:
-        state.fail(str(exc))
+        if not sink.terminal_emitted:
+            sink.fail(type(exc).__name__, str(exc))
+        return
+
+    core_runtime = public_result.get("runtime", {})
+    if core_runtime.get("terminal_status") == "HOLD" or core_runtime.get("presentation_status") == "HOLD":
+        _attach_task_cost(state, public_result, provider, selected_model)
+        presentation_receipt = core_runtime.get("presentation_receipt", {})
+        error_code = presentation_receipt.get("error_code") if isinstance(presentation_receipt, dict) else None
+        message = str(
+            (presentation_receipt.get("error_message") if isinstance(presentation_receipt, dict) else None)
+            or error_code or "公开展示合同未通过"
+        )
+        state.presentation_hold(message)
         return
 
     verdict = public_result.get("closure_card", {}).get("Verdict")
@@ -513,42 +573,30 @@ def _analysis_worker(state: GuiState, payload: dict[str, Any]) -> None:
         return
     interpretation_timeout = provider_stage_timeout_seconds(provider, "interpretation")
     state.add_status(
-        "interpreting",
-        "正在调用同一模型生成受约束的中文解读（额外一次 API 调用）",
-        provider=provider,
-        model=selected_model or PROVIDERS[provider].default_model,
-        reasoning_option=selected_reasoning,
-        timeout_seconds=interpretation_timeout,
+        "interpreting", "正在调用同一模型生成受约束的中文解读（额外一次 API 调用）",
+        provider=provider, model=selected_model or PROVIDERS[provider].default_model,
+        reasoning_option=selected_reasoning, timeout_seconds=interpretation_timeout,
     )
 
     def on_interpretation_attempt(number: int) -> None:
         state.add_status(
             "interpreting",
             f"中文解读 API 第 {number} 次请求已发出，单次等待上限 {interpretation_timeout:g} 秒",
-            provider=provider,
-            attempt=number,
-            reasoning_option=selected_reasoning,
+            provider=provider, attempt=number, reasoning_option=selected_reasoning,
             timeout_seconds=interpretation_timeout,
         )
 
     try:
         interpretation = generate_interpretation(
-            Path(manuscript),
-            expected_artifact_sha256=result.artifact_sha256,
+            Path(manuscript), expected_artifact_sha256=result.artifact_sha256,
             manuscript_identity=selected_identity or Path(manuscript).name,
-            public_result=public_result,
-            provider=provider,
-            model=selected_model,
-            reasoning_option=selected_reasoning,
-            on_attempt=on_interpretation_attempt,
+            public_result=public_result, provider=provider, model=selected_model,
+            reasoning_option=selected_reasoning, on_attempt=on_interpretation_attempt,
         )
         state.add_status(
-            "interpretation_validated",
-            "中文解读已返回并通过十一键合同校验",
-            provider=interpretation.provider,
-            model=interpretation.model,
-            reasoning_option=interpretation.reasoning_option,
-            attempts=interpretation.attempts,
+            "interpretation_validated", "中文解读已返回并通过十一键合同校验",
+            provider=interpretation.provider, model=interpretation.model,
+            reasoning_option=interpretation.reasoning_option, attempts=interpretation.attempts,
             usage=interpretation.usage,
         )
         public_result["interpretation"] = interpretation.as_dict()
@@ -709,8 +757,8 @@ function renderInterpretation(bundle){{const doc=bundle&&bundle.document;$('inte
 function moneyPair(usd,cny){{const parts=[];if(cny!==null&&cny!==undefined)parts.push('CNY ¥'+Number(cny).toFixed(6));if(usd!==null&&usd!==undefined)parts.push('USD $'+Number(usd).toFixed(6));return parts.length?parts.join(' / '):'不可用'}}
 function renderCost(cost){{$('costBox').style.display=cost?'block':'none';if(!cost)return;$('costTotal').textContent=cost.status==='no_api_calls'?'CNY ¥0.000000 / USD $0.000000（未调用 API）':(cost.status==='usage_unavailable'?'API 未返回完整 token usage，无法估算':('约 '+moneyPair(cost.total_estimated_cost_usd,cost.total_estimated_cost_cny)));const pricing=cost.pricing,fx=cost.exchange_rate;$('costSource').textContent=pricing?('价格来源：'+pricing.source_status+'；原币 '+pricing.currency+'；'+pricing.price_as_of+'；'+pricing.source_url+'；'+pricing.note+(fx?(' 汇率来源：'+fx.source_status+'；'+fx.rate_date+'；1 USD = '+Number(fx.usd_to_cny).toFixed(6)+' CNY；'+fx.source_url+'。'):'')):'没有可验证的该模型价格。';const callItems=(cost.calls||[]).map(item=>'API '+item.call_index+'：'+(item.usage_complete===false?'token usage 不完整，费用不可用':('输入 '+item.prompt_tokens+'，缓存命中 '+item.cache_hit_tokens+'，输出 '+item.completion_tokens+' tokens，估算 '+moneyPair(item.estimated_cost_usd,item.estimated_cost_cny))));list('costCalls',callItems);list('costLimits',cost.billing_limitations)}}
 function renderTimeline(items){{const el=$('timeline');el.textContent='';(items||[]).forEach(item=>{{const li=document.createElement('li');const clock=document.createElement('div');clock.className='time';clock.textContent=Number(item.elapsed_seconds).toFixed(1)+' 秒';const body=document.createElement('div');const message=document.createElement('div');message.textContent=item.message;body.appendChild(message);if(item.details&&Object.keys(item.details).length){{const detail=document.createElement('div');detail.className='detail';detail.textContent=JSON.stringify(item.details);body.appendChild(detail)}}li.append(clock,body);el.appendChild(li)}});el.scrollTop=el.scrollHeight}}
-function renderResult(result,busy,interpretationError){{lastResult=result;const c=result.closure_card;$('result').style.display='block';$('verdict').textContent=c.Verdict;$('reason').textContent=c.Reason;list('evidence',c['Evidence holds']);list('submission',c['Submission / external holds']);list('protected',c['Protected / Do not disturb']);renderSuggestions(c['Lite directional suggestions']);$('next').textContent=c['Next permitted action'];renderHarness(result.runtime);renderCost(result.task_cost);renderInterpretation(result.interpretation);$('json').textContent=JSON.stringify(result,null,2);$('save').disabled=busy;$('copy').disabled=busy;$('saveInterpretation').disabled=busy||!(result.interpretation&&result.interpretation.document);$('interpError').textContent=interpretationError?('核心裁决保持有效，但中文解读未生成：'+interpretationError):'';$('interpError').style.display=interpretationError?'block':'none'}}
-function renderStatus(s){{providers=s.providers;updateProvider();$('phase').textContent=s.phase;$('message').textContent=s.message;$('elapsed').textContent=Number(s.elapsed_seconds).toFixed(1)+' 秒';$('run').disabled=s.busy;$('dot').className='dot '+(s.busy?'busy':s.error?'bad':s.result?'ok':'');renderTimeline(s.timeline);if(s.error)showError(s.error);if(s.result)renderResult(s.result,s.busy,s.interpretation_error);if(!s.busy&&poller){{clearInterval(poller);poller=null}}}}
+function renderResult(result,busy,interpretationError,presentationError){{lastResult=result;const c=result.closure_card;$('result').style.display='block';$('verdict').textContent=c.Verdict;$('reason').textContent=c.Reason;list('evidence',c['Evidence holds']);list('submission',c['Submission / external holds']);list('protected',c['Protected / Do not disturb']);renderSuggestions(c['Lite directional suggestions']);$('next').textContent=c['Next permitted action'];renderHarness(result.runtime);renderCost(result.task_cost);renderInterpretation(result.interpretation);$('json').textContent=JSON.stringify(result,null,2);$('save').disabled=busy;$('copy').disabled=busy;$('saveInterpretation').disabled=busy||!(result.interpretation&&result.interpretation.document);const holdText=presentationError?('机器裁决保持有效，但公开展示处于 HOLD：'+presentationError):(interpretationError?('核心裁决保持有效，但中文解读未生成：'+interpretationError):'');$('interpError').textContent=holdText;$('interpError').style.display=holdText?'block':'none'}}
+function renderStatus(s){{providers=s.providers;updateProvider();$('phase').textContent=s.phase;$('message').textContent=s.message;$('elapsed').textContent=Number(s.elapsed_seconds).toFixed(1)+' 秒';$('run').disabled=s.busy;$('dot').className='dot '+(s.busy?'busy':(s.error||s.presentation_error)?'bad':s.result?'ok':'');renderTimeline(s.timeline);if(s.error)showError(s.error);if(s.result)renderResult(s.result,s.busy,s.interpretation_error,s.presentation_error);if(!s.busy&&poller){{clearInterval(poller);poller=null}}}}
 async function refresh(){{try{{renderStatus(await api('/api/status'))}}catch(e){{showError(e.message)}}}}
 $('provider').onchange=async()=>{{$('modelSource').textContent='';updateProvider(true);await refreshModelCatalog()}};$('model').onchange=refreshReasoningOptions;$('refreshModels').onclick=refreshModelCatalog;$('pickManuscript').onclick=async()=>{{try{{showError('');const r=await api('/api/pick-manuscript',{{}});if(r.path){{$('manuscript').value=r.path;$('identity').value=r.path.split(/[\\/]/).pop()}}}}catch(e){{showError(e.message)}}}};
 $('pickPrior').onclick=async()=>{{try{{showError('');const r=await api('/api/pick-prior',{{}});if(r.path)$('prior').value=r.path}}catch(e){{showError(e.message)}}}};

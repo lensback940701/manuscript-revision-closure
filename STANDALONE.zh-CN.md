@@ -1,10 +1,12 @@
-# Manuscript Revision Closure Standalone 0.6.1
+# Manuscript Revision Closure Standalone 0.6.2
 
 这是 `manuscript-revision-closure` Skill 的独立 Windows 多阶段合同运行器。它执行
 Skill 0.2.1 的只读截止判断输出合同，通过 DeepSeek、Kimi 或 Gemini API 完成不落盘的
 整稿覆盖与根因裁决，再由原确定性 helper 生成 Closure Card 和最小收据。它不复制 Codex
 的通用工具系统，但已加入与本 Skill 直接相关的 intake、coverage、adjudication 和 contradiction gates；架构审计见
 [`docs/HARNESS_EQUIVALENCE_AUDIT.zh-CN.md`](docs/HARNESS_EQUIVALENCE_AUDIT.zh-CN.md)。
+
+0.6.2 将 provider completion、usage、machine adjudication 和公开展示原生拆分为独立事务。contradiction gate 通过后先冻结 machine-state SHA-256；若中文公开字段不合格，只允许一次不含稿件全文、coverage rows、verdict 或私有 verifier 材料的 presentation-only request。该请求使用 provider-scale output budget，Kimi 最长等待 900 秒且 `max_transient_retries=0`。失败保留机器 verdict、usage 与 source binding，并返回可恢复 presentation HOLD。详细合同见 [`docs/NATIVE_PRESENTATION_TRANSACTION_AUDIT.zh-CN.md`](docs/NATIVE_PRESENTATION_TRANSACTION_AUDIT.zh-CN.md)。
 
 ## 运行方式
 
@@ -32,10 +34,7 @@ JSON Schema 交给服务端约束。模型返回后仍须通过独立的本地�
 DeepSeek 384K、Kimi 128K、Gemini 64K 的高余量。若提供商仍以 `finish_reason=length` 截断，程序会明确报告截断，
 不把它伪装成普通 JSON 解析错误。
 
-请求等待采用 provider/stage 合同：Kimi 整稿覆盖为 300 秒，根因裁决和中文解读为
-900 秒；其余已登记组合默认 180 秒。socket/read timeout 不会自动重发整项任务，因为
-此时服务端是否仍在执行不可知，盲目重发可能造成重复计费。只有明确的 HTTP
-429、502、503、504 才允许最多两次有限重试。CLI 可用 `--timeout` 显式覆盖所有阶段。
+请求等待采用 provider/stage 合同：Kimi 整稿覆盖为 300 秒，根因裁决、presentation repair 和中文解读为 900 秒；其余已登记组合默认 180 秒。coverage、adjudication 与 interpretation 沿用其登记的有限重试合同；presentation repair 固定 `max_transient_retries=0`，timeout、socket/read error、连接中断以及 HTTP 429、502、503、504 或其他 provider error 都不会自动重发。CLI `--timeout` 可显式覆盖等待时间，并进入 bounded receipt。
 
 如需保留原来的终端向导：
 

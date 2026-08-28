@@ -106,7 +106,7 @@ API keys are read only from environment variables. See
 security boundaries. The standalone and Skill versions are managed separately;
 this does not change the Skill's `0.2.1` contract version.
 
-Standalone 0.6.1 is a bounded multi-stage runner with a visible multi-model selector and model-specific
+Standalone 0.6.2 is a bounded multi-stage runner with a visible multi-model selector and model-specific
 reasoning controls. Unsupported provider/model/reasoning combinations fail
 before an API request instead of being silently ignored.
 Core assessment and optional interpretation requests use structured output.
@@ -122,6 +122,7 @@ Core assessment now uses two bound calls: a ten-dimension whole-manuscript
 coverage pass and an independent full-text root-cause adjudication pass. A local
 contradiction gate verifies the canonical coverage SHA-256, candidate accounting,
 hold preservation, and protected invariants before the deterministic reducer runs.
+After that gate, 0.6.2 freezes the canonical machine state before validating public-language fields. A Chinese presentation defect may trigger exactly one schema-bound presentation-only request with no manuscript text and no automatic retry; failure produces a recoverable presentation HOLD without erasing the machine verdict or usage. Protected source identity and localizable display text are bound separately, and each request emits one idempotent terminal event.
 Kimi uses a 300-second coverage window and 900-second adjudication and interpretation
 windows. Read/socket timeouts are not automatically resent; only explicit HTTP
 429, 502, 503, and 504 responses receive bounded retries.
