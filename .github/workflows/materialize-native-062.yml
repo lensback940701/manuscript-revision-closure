@@ -1,0 +1,63 @@
+name: materialize native 0.6.2
+
+on:
+  push:
+    branches:
+      - automation/0.6.2-native-materialize
+
+permissions:
+  contents: write
+
+jobs:
+  materialize-and-verify:
+    if: ${{ !contains(github.event.head_commit.message, '[materialized]') }}
+    runs-on: ubuntu-latest
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Verify and reconstruct bounded payloads
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat .repair_payload/materializer.part* > /tmp/materializer.b64
+          echo "30dacc5222bafdd6da2fc685580f44e08e5232593645831d7fa4de7969d65a2f  /tmp/materializer.b64" | sha256sum -c -
+          base64 --decode /tmp/materializer.b64 | gzip --decompress > .repair_payload/materialize_native.py
+          echo "cceadc8a78f45ee569b21083691d86d600b29ac717d12508838031cda5137244  .repair_payload/materialize_native.py" | sha256sum -c -
+          cat .repair_payload/native_payload.part* > /tmp/native_payload.b64
+          echo "996ade9d43d799b9b17134077c9cbc99c426e799a02ffecc779f560425203326  /tmp/native_payload.b64" | sha256sum -c -
+          python -B .repair_payload/materialize_native.py
+      - name: Focused presentation transaction regression
+        run: python -B -m unittest discover -s tests -p "test_presentation_transaction_native.py" -v
+      - name: Full unittest discovery
+        run: python -B -m unittest discover -s tests -p "test_*.py"
+      - name: Retained adversarial contract
+        run: python -B scripts/run_adversarial_probes_rc2_0.py
+      - name: Current adversarial contract
+        run: python -B scripts/run_adversarial_probes_rc2_1.py
+      - name: Native architecture and hygiene gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(python -B -c 'import standalone; print(standalone.__version__)')" = "0.6.2"
+          ! grep -R -n -E 'install_runtime_repair|_mrc_original_|setattr\(' \
+            standalone/__init__.py standalone/assessor.py standalone/events.py standalone/presentation_transaction.py
+          ! grep -n -E 'max_output_tokens[[:space:]]*=[[:space:]]*(4096|5000|8192)' standalone/presentation_transaction.py
+          ! find . -type d -name __pycache__ -print -quit | grep -q .
+          ! find . -type f -name '*.py[co]' -print -quit | grep -q .
+      - name: Commit materialized source and remove staging mechanism
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf .repair_payload
+          git rm .github/workflows/materialize-native-062.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Materialize native presentation transaction 0.6.2 [materialized]"
+          git push origin HEAD:automation/0.6.2-native-materialize
