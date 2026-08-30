@@ -106,7 +106,7 @@ API keys are read only from environment variables. See
 security boundaries. The standalone and Skill versions are managed separately;
 this does not change the Skill's `0.2.1` contract version.
 
-Standalone 0.6.3 is a bounded multi-stage runner with a visible multi-model selector and model-specific
+Standalone 0.6.4 is a bounded multi-stage runner with a visible multi-model selector and model-specific
 reasoning controls. Unsupported provider/model/reasoning combinations fail
 before an API request instead of being silently ignored.
 Core assessment and optional interpretation requests use structured output.
@@ -118,14 +118,21 @@ provider-scale headroom (DeepSeek 384K, Kimi 128K, Gemini 64K) and explicit
 length-truncation detection.
 Kimi and DeepSeek are priced natively in CNY, Gemini in USD, with dated ECB
 USD/CNY reference-rate conversion for dual-currency display.
-Core assessment now uses two bound calls: a ten-dimension whole-manuscript
-coverage pass and an independent full-text root-cause adjudication pass. A local
-contradiction gate verifies the canonical coverage SHA-256, candidate accounting,
-hold preservation, and protected invariants before the deterministic reducer runs.
-After that gate, 0.6.3 freezes the canonical machine state before validating public-language fields. A Chinese presentation defect may trigger exactly one schema-bound presentation-only request with no manuscript text and no automatic retry; failure produces a recoverable presentation HOLD without erasing the machine verdict or usage. Protected source identity and localizable display text are bound separately, and each request emits one idempotent terminal event. Coverage, adjudication, presentation repair, and interpretation each permit exactly one physical HTTP attempt: timeout, network ambiguity, 429, 502, 503, and 504 never trigger an automatic full-request resend. Receipts distinguish known usage from `UNKNOWN_POTENTIAL_CHARGE` attempts.
+Core assessment uses two bound calls: a ten-dimension whole-manuscript coverage
+pass and a genuinely independent full-text root-cause adjudication pass. Coverage
+candidates are a required lower bound, not a ceiling: adjudication must account for
+each candidate and may add only grounded, canonical, non-duplicate dimensions that
+coverage missed. A local contradiction gate verifies the canonical coverage SHA-256,
+candidate binding, affirmative STOP sufficiency, hold preservation, and protected
+invariants before the deterministic reducer runs. STOP requires positive sufficiency
+from both passes for contribution, whole-paper argument, theory, methods, evidence,
+and section coherence; careful scope or non-overclaiming alone is not sufficient.
+After that gate, 0.6.4 freezes the canonical machine state before validating public-language fields. A Chinese presentation defect may trigger exactly one schema-bound presentation-only request with no manuscript text and no automatic retry; failure produces a recoverable presentation HOLD without erasing the machine verdict or usage. Protected source identity and localizable display text are bound separately, and each request emits one idempotent terminal event. Coverage, adjudication, presentation repair, and interpretation each permit exactly one physical HTTP attempt: timeout, network ambiguity, 429, 502, 503, and 504 never trigger an automatic full-request resend. Receipts distinguish known usage from `UNKNOWN_POTENTIAL_CHARGE` attempts; known usage receipt counts remain intact even when a live price quote is unavailable. `mrc-local-technical-preflight-1.0` blocks only unreadable/unsupported/empty/over-limit inputs and configuration failures. Titles, section labels, ordering, numbering, ATX/Setext/plain text, and YAML/TOML front matter are best-effort formatting advisories and cannot change provider routing. Every provider-bound run defaults to refusal and requires a fresh `mrc-provider-transmission-consent-1.0` confirmation bound to file SHA-256, provider, and model. The first and only coverage request uses `mrc-whole-manuscript-coverage-3.0` plus `mrc-semantic-manuscript-basis-1.0` to decide whether substantive whole-manuscript material is sufficient; it must not infer insufficiency merely from non-traditional formatting. An insufficient basis consumes exactly one coverage attempt and records usage/cost, starts no adjudication, forms no machine verdict or presentation source, and remains distinct from technical failures. Provider errors expose only bounded sanitized status, code, and detail.
+
+Dynamic adjudication schemas are linted before dispatch under `mrc-schema-definition-lint-1.0`. Under `mrc-dynamic-adjudication-schema-3.0`, a zero-candidate result uses `minItems=0`, a finite canonical maximum, and a non-empty canonical enum, so independent adjudication can recover a grounded coverage miss without producing provider-invalid `enum: []`. Unknown, duplicate, unlocatable, speculative, or unexplained additions fail closed. Any invalid schema definition stops locally with `SCHEMA_DEFINITION_INVALID`; it is never sent as a paid provider request.
 Kimi uses a 300-second coverage window and 900-second adjudication and interpretation
-windows. Read/socket timeouts are not automatically resent; only explicit HTTP
-429, 502, 503, and 504 responses receive bounded retries.
+windows. Read/socket timeouts, network ambiguity, and HTTP 429, 502, 503, and 504
+all stop after the single physical attempt; the full request is never automatically resent.
 
 ## Invocation
 

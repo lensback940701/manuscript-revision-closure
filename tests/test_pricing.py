@@ -142,6 +142,18 @@ class PricingTests(unittest.TestCase):
         self.assertEqual("UNKNOWN_POTENTIAL_CHARGE", result["calls"][0]["billing_status"])
         self.assertIsNone(result["calls"][0]["prompt_tokens"])
 
+    def test_complete_usage_receipt_count_is_independent_of_price_availability(self) -> None:
+        result = calculate_task_cost(
+            None,
+            [{"prompt_tokens": 123, "completion_tokens": 17, "total_tokens": 140}],
+        )
+        self.assertEqual("price_unavailable", result["status"])
+        self.assertEqual(1, result["physical_request_attempt_count"])
+        self.assertEqual(1, result["usage_receipt_count"])
+        self.assertEqual(0, result["unknown_potential_charge_attempt_count"])
+        self.assertTrue(result["calls"][0]["usage_complete"])
+        self.assertEqual("KNOWN_USAGE", result["calls"][0]["billing_status"])
+
 
 if __name__ == "__main__":
     unittest.main()

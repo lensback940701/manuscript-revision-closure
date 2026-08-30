@@ -4,6 +4,7 @@ import copy
 import unittest
 
 from standalone.harness import (
+    AFFIRMATIVE_STOP_DIMENSIONS,
     COVERAGE_CONTRACT_VERSION,
     COVERAGE_DIMENSIONS,
     HarnessContractError,
@@ -28,6 +29,9 @@ def complete_text() -> str:
 def coverage_state(*, candidate: str | None = None) -> dict:
     return {
         "coverage_contract_version": COVERAGE_CONTRACT_VERSION,
+        "whole_manuscript_basis": "SUFFICIENT",
+        "basis_reason_codes": ["SUFFICIENT_SUBSTANTIVE_WHOLE_MANUSCRIPT"],
+        "basis_explanation": "The supplied text contains sufficient substantive whole-manuscript material.",
         "manuscript_identity_confirmed": True,
         "full_span_covered": True,
         "dimensions": [
@@ -36,6 +40,8 @@ def coverage_state(*, candidate: str | None = None) -> dict:
                 "applicability": "APPLICABLE",
                 "assessed": True,
                 "status": "POTENTIAL_MATERIAL_ROOT_CAUSE" if dimension == candidate else "CLEAR",
+                "affirmative_sufficiency": True,
+                "sufficiency_reason_code": "AFFIRMATIVE_MANUSCRIPT_SUPPORT",
             }
             for dimension in COVERAGE_DIMENSIONS
         ],
@@ -50,6 +56,27 @@ def coverage_state(*, candidate: str | None = None) -> dict:
     }
 
 
+def insufficient_coverage_state() -> dict:
+    value = coverage_state()
+    value.update(
+        {
+            "whole_manuscript_basis": "INSUFFICIENT",
+            "basis_reason_codes": ["FRAGMENT_OR_EXCERPT_ONLY"],
+            "basis_explanation": "Only a bounded fragment is available for substantive assessment.",
+            "full_span_covered": False,
+        }
+    )
+    for row in value["dimensions"]:
+        row["assessed"] = False
+        row["status"] = "UNASSESSED"
+        row["affirmative_sufficiency"] = False
+        row["sufficiency_reason_code"] = "UNASSESSED"
+    value["protected_invariants"] = {
+        key: False for key in value["protected_invariants"]
+    }
+    return value
+
+
 def model_state(*, candidate: str | None = None) -> dict:
     causes = []
     if candidate:
@@ -58,6 +85,10 @@ def model_state(*, candidate: str | None = None) -> dict:
                 "observed": True,
                 "locatable": True,
                 "affects": [candidate],
+                "origin": "COVERAGE_CANDIDATE",
+                "coverage_disagreement": False,
+                "disposition_reason_code": "MATERIAL_CONCERN_CONFIRMED",
+                "author_decision_required": False,
                 "style_only": False,
                 "hold_only": False,
                 "verification_only": False,
@@ -67,6 +98,20 @@ def model_state(*, candidate: str | None = None) -> dict:
         )
     return {
         "material_root_causes": causes,
+        "affirmative_sufficiency": [
+            {
+                "dimension": dimension,
+                "assessed": True,
+                "affirmative_sufficiency": dimension != candidate,
+                "unresolved_material_concern": dimension == candidate,
+                "sufficiency_reason_code": (
+                    "UNRESOLVED_MATERIAL_CONCERN"
+                    if dimension == candidate
+                    else "AFFIRMATIVE_MANUSCRIPT_SUPPORT"
+                ),
+            }
+            for dimension in AFFIRMATIVE_STOP_DIMENSIONS
+        ],
         "evidence_hold_codes": [],
         "submission_hold_codes": [],
         "protected": ["保持当前论点上限。"],
@@ -76,16 +121,20 @@ def model_state(*, candidate: str | None = None) -> dict:
 
 
 class HarnessTests(unittest.TestCase):
-    def test_intake_requires_title_abstract_conclusion_and_references_in_order(self) -> None:
+    def test_local_preflight_is_format_nonblocking_with_advisories(self) -> None:
         receipt = analyze_intake_structure(complete_text())
         self.assertTrue(receipt.complete_structure)
         broken = analyze_intake_structure(complete_text().replace("Conclusion", "Closing remarks"))
-        self.assertFalse(broken.complete_structure)
+        self.assertTrue(broken.complete_structure)
+        self.assertTrue(broken.format_advisory_only)
+        self.assertIn("STRUCTURE_FORMAT_REVIEW", broken.advisory_codes)
         reversed_sections = complete_text().replace(
             "Conclusion\nThe contribution remains bounded.\n\nReferences\nReference A.",
             "References\nReference A.\n\nConclusion\nThe contribution remains bounded.",
         )
-        self.assertFalse(analyze_intake_structure(reversed_sections).complete_structure)
+        reversed_receipt = analyze_intake_structure(reversed_sections)
+        self.assertTrue(reversed_receipt.complete_structure)
+        self.assertIn("STRUCTURE_FORMAT_REVIEW", reversed_receipt.advisory_codes)
 
     def test_context_budget_is_model_bound_and_fails_before_truncation(self) -> None:
         short = context_budget(
@@ -119,7 +168,46 @@ class HarnessTests(unittest.TestCase):
         value = coverage_state()
         value["dimensions"][0]["assessed"] = False
         value["dimensions"][0]["status"] = "UNASSESSED"
+        value["dimensions"][0]["affirmative_sufficiency"] = False
+        value["dimensions"][0]["sufficiency_reason_code"] = "UNASSESSED"
         self.assertFalse(coverage_is_complete(validate_coverage(value)))
+
+    def test_semantic_basis_truth_table_and_explanation_privacy(self) -> None:
+        insufficient = insufficient_coverage_state()
+        clean = validate_coverage(insufficient)
+        self.assertFalse(coverage_is_complete(clean))
+        self.assertEqual("INSUFFICIENT", clean["whole_manuscript_basis"])
+
+        suspicious = copy.deepcopy(insufficient)
+        suspicious["basis_explanation"] = (
+            "Authorization: Bearer sk-secret at C:\\private\\paper.md line 99"
+        )
+        sanitized = validate_coverage(suspicious)
+        serialized = str(sanitized)
+        self.assertNotIn("sk-secret", serialized)
+        self.assertNotIn("C:\\private", serialized)
+        self.assertNotIn("line 99", serialized)
+
+        invalid_variants = []
+        full_span = copy.deepcopy(insufficient)
+        full_span["full_span_covered"] = True
+        invalid_variants.append(full_span)
+        assessed = copy.deepcopy(insufficient)
+        assessed["dimensions"][0].update({"assessed": True, "status": "CLEAR"})
+        invalid_variants.append(assessed)
+        invariant = copy.deepcopy(insufficient)
+        invariant["protected_invariants"]["claim_ceiling_preserved"] = True
+        invalid_variants.append(invariant)
+        hold = copy.deepcopy(insufficient)
+        hold["evidence_hold_codes"] = ["SOURCE_VERIFICATION_REQUIRED"]
+        invalid_variants.append(hold)
+        wrong_reason = coverage_state()
+        wrong_reason["basis_reason_codes"] = ["FRAGMENT_OR_EXCERPT_ONLY"]
+        invalid_variants.append(wrong_reason)
+        for invalid in invalid_variants:
+            with self.subTest(invalid=invalid):
+                with self.assertRaises(HarnessContractError):
+                    validate_coverage(invalid)
 
     def test_adjudication_hash_binding_and_cross_stage_accounting(self) -> None:
         coverage = validate_coverage(coverage_state(candidate="contribution"))

@@ -17,7 +17,12 @@ import standalone
 from standalone import assessor as assessor_module
 from standalone.assessor import RunOptions, analyze_manuscript
 from standalone.events import EventSink
-from standalone.harness import COVERAGE_CONTRACT_VERSION, COVERAGE_DIMENSIONS, canonical_digest
+from standalone.harness import (
+    AFFIRMATIVE_STOP_DIMENSIONS,
+    COVERAGE_CONTRACT_VERSION,
+    COVERAGE_DIMENSIONS,
+    canonical_digest,
+)
 from standalone.interpretation import InterpretationContractError, generate_interpretation
 from standalone.presentation_transaction import (
     PRESENTATION_REPAIR_CONTRACT_VERSION,
@@ -38,6 +43,9 @@ from standalone.web_gui import GuiState, _analysis_worker
 
 COVERAGE_STATE = {
     "coverage_contract_version": COVERAGE_CONTRACT_VERSION,
+    "whole_manuscript_basis": "SUFFICIENT",
+    "basis_reason_codes": ["SUFFICIENT_SUBSTANTIVE_WHOLE_MANUSCRIPT"],
+    "basis_explanation": "The supplied text contains sufficient substantive whole-manuscript material.",
     "manuscript_identity_confirmed": True,
     "full_span_covered": True,
     "dimensions": [
@@ -46,6 +54,8 @@ COVERAGE_STATE = {
             "applicability": "APPLICABLE",
             "assessed": True,
             "status": "CLEAR",
+            "affirmative_sufficiency": True,
+            "sufficiency_reason_code": "AFFIRMATIVE_MANUSCRIPT_SUPPORT",
         }
         for dimension in COVERAGE_DIMENSIONS
     ],
@@ -61,6 +71,17 @@ COVERAGE_STATE = {
 
 ENGLISH_MACHINE_STATE = {
     "material_root_causes": [],
+    "affirmative_sufficiency": [
+        {
+            "dimension": dimension,
+            "assessed": True,
+            "affirmative_sufficiency": True,
+            "unresolved_material_concern": False,
+            "sufficiency_reason_code": "AFFIRMATIVE_MANUSCRIPT_SUPPORT",
+        }
+        for dimension in AFFIRMATIVE_STOP_DIMENSIONS
+    ],
+    "affirmative_stop_gate_passed": True,
     "evidence_hold_codes": [],
     "submission_hold_codes": [],
     "protected": [
@@ -89,7 +110,11 @@ def long_manuscript(marker: str = "FULL_MANUSCRIPT_MARKER") -> str:
 def adjudication(machine_state: dict[str, object]) -> dict[str, object]:
     return {
         "coverage_digest_sha256": canonical_digest(COVERAGE_STATE),
-        **machine_state,
+        **{
+            key: value
+            for key, value in machine_state.items()
+            if key != "affirmative_stop_gate_passed"
+        },
     }
 
 
@@ -175,6 +200,7 @@ class NativePresentationTransactionTests(unittest.TestCase):
                     manuscript_identity="paper-v1",
                     confirm_complete_current_manuscript=True,
                     enable_presentation_repair=enable_presentation_repair,
+                    provider_transmission_consent=True,
                 ),
                 event_sink=event_sink,
             )
@@ -506,7 +532,6 @@ class NativePresentationTransactionTests(unittest.TestCase):
             return next(queue)
 
         state = GuiState()
-        self.assertTrue(state.start())
         with tempfile.TemporaryDirectory() as directory, patch.dict(
             os.environ, {"MOONSHOT_API_KEY": "synthetic"}, clear=True
         ), patch.object(
@@ -514,6 +539,8 @@ class NativePresentationTransactionTests(unittest.TestCase):
         ), patch("standalone.web_gui.price_with_fallback", return_value=None):
             path = Path(directory) / "paper.md"
             path.write_text(long_manuscript(), encoding="utf-8")
+            prepared = state.prepare_consent(str(path), "kimi", "kimi-k2.6")
+            self.assertTrue(state.start())
             _analysis_worker(
                 state,
                 {
@@ -526,6 +553,8 @@ class NativePresentationTransactionTests(unittest.TestCase):
                     "confirmed_complete": True,
                     "prior_receipt_path": "",
                     "generate_interpretation": True,
+                    "consent_token": prepared["consent_token"],
+                    "consent_confirmed": True,
                 },
             )
         snapshot = state.snapshot()
@@ -610,14 +639,14 @@ class NativePresentationTransactionTests(unittest.TestCase):
         ):
             self.assertNotIn(forbidden, serialized)
 
-    def test_33_version_is_063_and_skill_remains_021(self) -> None:
-        self.assertEqual("0.6.3", standalone.__version__)
+    def test_33_version_is_064_and_skill_remains_021(self) -> None:
+        self.assertEqual("0.6.4", standalone.__version__)
         result, _messages, _clients, _calls = self._run_analysis(
             self._core_completions(CHINESE_MACHINE_STATE),
             machine_state=CHINESE_MACHINE_STATE,
         )
         runtime = result.as_dict()["runtime"]
-        self.assertEqual("0.6.3", runtime["standalone_version"])
+        self.assertEqual("0.6.4", runtime["standalone_version"])
         self.assertEqual("0.2.1", runtime["skill_version"])
 
     def test_machine_hash_parity_is_exact_after_successful_repair(self) -> None:

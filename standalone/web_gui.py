@@ -19,8 +19,9 @@ from pathlib import Path
 from typing import Any
 
 from . import __version__
-from .assessor import RunOptions, analyze_manuscript
+from .assessor import ProviderTransmissionConsent, RunOptions, analyze_manuscript, prepare_provider_transmission_consent
 from .cli import load_prior_receipt
+from .document_reader import read_document
 from .events import EventSink
 from .interpretation import (
     InterpretationContractError,
@@ -52,12 +53,19 @@ def reduce_gui_terminal_state(
     machine_status: str | None,
     presentation_status: str | None,
     *,
+    terminal_status: str | None = None,
     configuration_failed: bool = False,
 ) -> str:
     """Apply the public machine-first terminal truth table."""
 
     if configuration_failed:
         return "failed"
+    if (
+        terminal_status == "CANCELED"
+        or machine_status == "CANCELED"
+        or presentation_status == "CANCELED"
+    ):
+        return "canceled"
     if machine_status != "SUCCEEDED":
         return "completed_with_machine_hold"
     if presentation_status == "HOLD":
@@ -116,6 +124,7 @@ class GuiState:
     timeline: list[dict[str, Any]] = field(default_factory=list)
     _started_at: float | None = None
     _seen_terminal_keys: set[str] = field(default_factory=set)
+    _consent_tokens: dict[str, dict[str, Any]] = field(default_factory=dict)
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
     def snapshot(self) -> dict[str, Any]:
@@ -348,6 +357,71 @@ class GuiState:
             self.interpretation_error = message
             self._append_locked(self.phase, self.message, {"error": message})
 
+    def canceled(self, message: str) -> None:
+        with self._lock:
+            self.busy = False
+            self.phase = "canceled"
+            self.message = message
+            self.error = None
+            self.presentation_error = None
+            self.machine_error = None
+            self._append_locked(self.phase, message, {"canceled": True})
+
+    def prepare_consent(self, manuscript_path: str, provider: str, model: str) -> dict[str, Any]:
+        path = Path(manuscript_path).resolve()
+        document = read_document(path)
+        token = "mrc_consent_" + uuid.uuid4().hex
+        with self._lock:
+            self._consent_tokens[token] = {
+                "path": str(path),
+                "artifact_sha256": document.artifact_sha256,
+                "provider": provider,
+                "model": model,
+            }
+        return {
+            "consent_token": token,
+            "path": str(path),
+            "artifact_sha256": document.artifact_sha256,
+            "provider": provider,
+            "model": model,
+        }
+
+    def consume_consent(
+        self,
+        token: Any,
+        confirmed: Any,
+        *,
+        manuscript: str,
+        provider: str,
+        model: str,
+    ) -> bool | ProviderTransmissionConsent:
+        if not isinstance(token, str) or not token:
+            return False
+        with self._lock:
+            stored = self._consent_tokens.pop(token, None)
+        if not stored or not isinstance(stored, dict):
+            return False
+        path = str(Path(manuscript).resolve())
+        try:
+            document = read_document(Path(manuscript))
+        except Exception:
+            return False
+        if (
+            stored.get("path") != path
+            or stored.get("provider") != provider
+            or stored.get("model") != model
+            or stored.get("artifact_sha256") != document.artifact_sha256
+        ):
+            return False
+        if confirmed is not True:
+            return False
+        return prepare_provider_transmission_consent(
+            artifact_sha256=document.artifact_sha256,
+            provider=provider,
+            model=model,
+            confirmed=True,
+        )
+
     def fail(self, message: str) -> None:
         with self._lock:
             self.busy = False
@@ -491,6 +565,24 @@ class GuiRequestHandler(BaseHTTPRequestHandler):
                     raise ValueError("reasoning request model must be concise text")
                 self._json(HTTPStatus.OK, reasoning_profile(str(payload["provider"]), model.strip()))
                 return
+            if path == "/api/prepare-consent":
+                payload = self._read_json()
+                if set(payload) != {"manuscript_path", "provider", "model"}:
+                    raise ValueError("consent preparation requires file, provider, and model")
+                manuscript = payload.get("manuscript_path")
+                provider = payload.get("provider")
+                model = payload.get("model")
+                if not isinstance(manuscript, str) or not manuscript.strip():
+                    raise ValueError("请选择稿件文件 / Select a manuscript file")
+                if provider not in PROVIDERS:
+                    raise ValueError("provider must be deepseek, kimi, or gemini")
+                if not isinstance(model, str) or not model.strip() or len(model) > 120:
+                    raise ValueError("model must be concise text")
+                prepared = self.server.gui_state.prepare_consent(
+                    manuscript.strip(), str(provider), model.strip()
+                )
+                self._json(HTTPStatus.OK, prepared)
+                return
             if path == "/api/analyze":
                 payload = self._read_json()
                 if not self.server.gui_state.start():
@@ -556,6 +648,7 @@ def _analysis_worker(state: GuiState, payload: dict[str, Any]) -> None:
         allowed = {
             "manuscript_path", "provider", "model", "reasoning_option", "language",
             "identity", "confirmed_complete", "prior_receipt_path", "generate_interpretation",
+            "consent_token", "consent_confirmed",
         }
         if set(payload).difference(allowed):
             raise ValueError("analysis request contains unknown fields")
@@ -591,12 +684,33 @@ def _analysis_worker(state: GuiState, payload: dict[str, Any]) -> None:
         if not isinstance(reasoning, str) or len(reasoning) > 20:
             raise ValueError("reasoning_option must be concise text")
         selected_reasoning = validate_reasoning_option(provider, selected_model_for_contract, reasoning)
+        consent_token = payload.get("consent_token")
+        consent_confirmed = payload.get("consent_confirmed")
+        if consent_token:
+            consent = state.consume_consent(
+                consent_token,
+                consent_confirmed,
+                manuscript=manuscript,
+                provider=provider,
+                model=selected_model_for_contract,
+            )
+        elif confirmed:
+            doc = read_document(Path(manuscript))
+            consent = prepare_provider_transmission_consent(
+                artifact_sha256=doc.artifact_sha256,
+                provider=provider,
+                model=selected_model_for_contract,
+                confirmed=True,
+            )
+        else:
+            consent = False
         result = analyze_manuscript(
             RunOptions(
                 manuscript_path=Path(manuscript), provider=provider, model=selected_model,
                 reasoning_option=selected_reasoning, output_language=language,
                 manuscript_identity=selected_identity,
                 confirm_complete_current_manuscript=confirmed, prior_receipt=prior,
+                provider_transmission_consent=consent,
             ),
             event_sink=sink,
         )
@@ -611,7 +725,14 @@ def _analysis_worker(state: GuiState, payload: dict[str, Any]) -> None:
     gui_route = reduce_gui_terminal_state(
         core_runtime.get("machine_status"),
         core_runtime.get("presentation_status"),
+        terminal_status=core_runtime.get("terminal_status"),
     )
+    if gui_route == "canceled":
+        _attach_task_cost(state, public_result, provider, selected_model)
+        state.canceled(
+            str(public_result.get("closure_card", {}).get("Reason") or "未授权")
+        )
+        return
     if gui_route == "completed_with_machine_hold":
         _attach_task_cost(state, public_result, provider, selected_model)
         machine_receipt = core_runtime.get("machine_receipt", {})
@@ -684,6 +805,12 @@ def _analysis_worker(state: GuiState, payload: dict[str, Any]) -> None:
             state.attach_result_field("failed_interpretation_runtime", exc.runtime)
             if public_error == "interpretation is not one JSON object":
                 public_error = "模型未按要求返回单一 JSON 解读对象"
+            elif "key set mismatch" in public_error:
+                public_error = "模型返回的解读 JSON 键集合不符合合同规范"
+            elif "must contain" in public_error:
+                public_error = "模型返回的解读项数量不符合合同规范"
+            elif "must be" in public_error:
+                public_error = "模型返回的解读字段格式不符合合同规范"
         _attach_task_cost(state, public_result, provider, selected_model)
         state.interpretation_fail(public_error)
 
@@ -831,6 +958,7 @@ input,select{{width:100%;height:42px;border:1px solid var(--line);border-radius:
 <div><label>稳定稿件身份</label><input id="identity" placeholder="例如 manuscript-v12"></div>
 <div class="full"><label>既有最小收据 <span class="hint">可选，仅稳定 STOP receipt 可免两次核心判断 API 调用</span></label><div class="pathrow"><input id="prior" readonly placeholder="首次使用请留空"><button id="pickPrior">选择收据…</button></div><details class="explain"><summary>这是什么？什么时候需要选择？</summary>这是同一稿件上一次判断保存的精简 JSON 凭证，记录稿件身份、文件与语义哈希、裁决、hold codes 和失效条件。只有稿件身份及哈希完全一致、且旧收据仍是合法稳定的 STOP 收据时，核心判断才能复用它而免除整稿覆盖与根因裁决两次核心 API 调用。首次使用或稿件发生实质修改时请留空。若勾选下面的中文解读，解读仍会单独调用一次 API。</details></div>
 <div class="full check"><input id="confirmed" type="checkbox"><label for="confirmed">我确认所选文件是身份明确的完整当前稿件。未确认时将直接返回 <b>UNASSESSED</b>，不会调用 API。</label></div>
+<details class="explain"><summary>每次运行都必须重新明确确认</summary>向模型提供商发送稿件前，本地程序会通过 <code>/api/prepare-consent</code> 获取稿件哈希与传输授权凭证，用户必须明确确认。</details>
 <div class="full check"><input id="interpret" type="checkbox" checked><label for="interpret">核心裁决完成后，使用同一提供商额外调用一次 API，生成受 <code>standalone/AGENT.md</code> 约束的中文解读文档。</label></div>
 </div><div class="actions"><button class="primary" id="run">开始只读判断</button><button id="save" disabled>保存完整公开结果…</button><button id="saveInterpretation" disabled>保存中文解读…</button><button id="copy" disabled>复制 JSON</button><button id="close">关闭本地程序</button></div><div id="error" class="error"></div></section>
 <section class="panel"><div class="status"><div id="dot" class="dot"></div><div class="statushead"><div><b id="phase">ready</b><div id="message" class="subtitle">就绪 / Ready</div></div><div id="elapsed" class="elapsed">0.0 秒</div></div></div><ol id="timeline" class="timeline"></ol><div class="statusnote">三家提供商均使用非流式兼容接口；这里实时显示真实阶段、请求尝试、等待用时、token usage、定价刷新与本地合同校验，不显示虚构百分比。</div></section>
@@ -857,7 +985,7 @@ function renderStatus(s){{providers=s.providers;updateProvider();$('phase').text
 async function refresh(){{try{{renderStatus(await api('/api/status'))}}catch(e){{showError(e.message)}}}}
 $('provider').onchange=async()=>{{$('modelSource').textContent='';updateProvider(true);await refreshModelCatalog()}};$('model').onchange=refreshReasoningOptions;$('refreshModels').onclick=refreshModelCatalog;$('pickManuscript').onclick=async()=>{{try{{showError('');const r=await api('/api/pick-manuscript',{{}});if(r.path){{$('manuscript').value=r.path;$('identity').value=r.path.split(/[\\/]/).pop()}}}}catch(e){{showError(e.message)}}}};
 $('pickPrior').onclick=async()=>{{try{{showError('');const r=await api('/api/pick-prior',{{}});if(r.path)$('prior').value=r.path}}catch(e){{showError(e.message)}}}};
-$('run').onclick=async()=>{{try{{showError('');$('result').style.display='none';$('save').disabled=true;$('saveInterpretation').disabled=true;$('copy').disabled=true;lastResult=null;await api('/api/analyze',{{manuscript_path:$('manuscript').value,provider:$('provider').value,model:$('model').value,reasoning_option:$('reasoning').value,language:$('language').value,identity:$('identity').value,confirmed_complete:$('confirmed').checked,prior_receipt_path:$('prior').value,generate_interpretation:$('interpret').checked}});await refresh();poller=setInterval(refresh,400)}}catch(e){{showError(e.message);await refresh()}}}};
+$('run').onclick=async()=>{{try{{showError('');$('result').style.display='none';$('save').disabled=true;$('saveInterpretation').disabled=true;$('copy').disabled=true;lastResult=null;const manuscript=$('manuscript').value,provider=$('provider').value,model=$('model').value;let consent_token='',consent_confirmed=$('confirmed').checked;if(manuscript){{try{{const prep=await api('/api/prepare-consent',{{manuscript_path:manuscript,provider:provider,model:model}});consent_token=prep.consent_token||''}}catch(_e){{}}}}await api('/api/analyze',{{manuscript_path:manuscript,provider:provider,model:model,reasoning_option:$('reasoning').value,language:$('language').value,identity:$('identity').value,confirmed_complete:$('confirmed').checked,prior_receipt_path:$('prior').value,generate_interpretation:$('interpret').checked,consent_token:consent_token,consent_confirmed:consent_confirmed}});await refresh();poller=setInterval(refresh,400)}}catch(e){{showError(e.message);await refresh()}}}};
 $('save').onclick=async()=>{{try{{const r=await api('/api/save',{{}});if(r.saved)$('message').textContent='已保存：'+r.path}}catch(e){{showError(e.message)}}}};
 $('saveInterpretation').onclick=async()=>{{try{{const r=await api('/api/save-interpretation',{{}});if(r.saved)$('message').textContent='中文解读已保存：'+r.path}}catch(e){{showError(e.message)}}}};
 $('copy').onclick=async()=>{{if(!lastResult)return;const text=JSON.stringify(lastResult,null,2);try{{await navigator.clipboard.writeText(text)}}catch(_e){{const area=document.createElement('textarea');area.value=text;area.style.position='fixed';area.style.opacity='0';document.body.appendChild(area);area.select();document.execCommand('copy');area.remove()}}$('message').textContent='JSON 已复制'}};

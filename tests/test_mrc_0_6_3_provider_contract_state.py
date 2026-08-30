@@ -40,6 +40,9 @@ def _coverage(candidates: list[str]) -> dict:
     candidate_set = set(candidates)
     return {
         "coverage_contract_version": harness.COVERAGE_CONTRACT_VERSION,
+        "whole_manuscript_basis": "SUFFICIENT",
+        "basis_reason_codes": ["SUFFICIENT_SUBSTANTIVE_WHOLE_MANUSCRIPT"],
+        "basis_explanation": "The supplied text contains sufficient substantive whole-manuscript material.",
         "manuscript_identity_confirmed": True,
         "full_span_covered": True,
         "dimensions": [
@@ -50,6 +53,8 @@ def _coverage(candidates: list[str]) -> dict:
                 "status": (
                     "POTENTIAL_MATERIAL_ROOT_CAUSE" if dimension in candidate_set else "CLEAR"
                 ),
+                "affirmative_sufficiency": True,
+                "sufficiency_reason_code": "AFFIRMATIVE_MANUSCRIPT_SUPPORT",
             }
             for dimension in harness.COVERAGE_DIMENSIONS
         ],
@@ -61,6 +66,48 @@ def _coverage(candidates: list[str]) -> dict:
             "evidence_status_distinctions_preserved": True,
             "rivals_and_negative_findings_preserved": True,
         },
+    }
+
+
+def _stop_sufficiency(*, unresolved: str | None = None) -> list[dict[str, object]]:
+    return [
+        {
+            "dimension": dimension,
+            "assessed": True,
+            "affirmative_sufficiency": dimension != unresolved,
+            "unresolved_material_concern": dimension == unresolved,
+            "sufficiency_reason_code": (
+                "UNRESOLVED_MATERIAL_CONCERN"
+                if dimension == unresolved
+                else "AFFIRMATIVE_MANUSCRIPT_SUPPORT"
+            ),
+        }
+        for dimension in harness.AFFIRMATIVE_STOP_DIMENSIONS
+    ]
+
+
+def _cause(
+    dimension: str,
+    *,
+    required: bool = True,
+    material: bool = True,
+    scope: str = "local",
+) -> dict[str, object]:
+    return {
+        "observed": material,
+        "locatable": material,
+        "dimension": dimension,
+        "origin": "COVERAGE_CANDIDATE" if required else "INDEPENDENT_ADDITION",
+        "coverage_disagreement": not required,
+        "disposition_reason_code": (
+            "MATERIAL_CONCERN_CONFIRMED" if material else "NOT_OBSERVED"
+        ),
+        "author_decision_required": False,
+        "style_only": False,
+        "hold_only": False,
+        "verification_only": False,
+        "expected_benefit_exceeds_risk": material,
+        "scope": scope,
     }
 
 
@@ -112,9 +159,9 @@ class Mrc063FailureFirstTests(unittest.TestCase):
         second_schema = builder(second)
         rows = first_schema["properties"]["material_root_causes"]
         self.assertEqual(2, rows["minItems"])
-        self.assertEqual(2, rows["maxItems"])
+        self.assertEqual(len(harness.COVERAGE_DIMENSIONS), rows["maxItems"])
         self.assertEqual(
-            ["contribution", "methods_and_research_design"],
+            list(harness.COVERAGE_DIMENSIONS),
             rows["items"]["properties"]["dimension"]["enum"],
         )
         first_hash = hashlib.sha256(
@@ -157,7 +204,9 @@ class Mrc063FailureFirstTests(unittest.TestCase):
                     status,
                     "bounded mock",
                     {"Retry-After": "9"},
-                    io.BytesIO(b'{"error":{"message":"must-not-persist"}}'),
+                    io.BytesIO(
+                        b'{"error":{"message":"Authorization: Bearer must-not-persist-opaque"}}'
+                    ),
                 )
                 with patch("standalone.providers.urllib.request.urlopen", side_effect=failure) as mocked:
                     with self.assertRaises(ProviderRequestError) as raised:
@@ -173,6 +222,10 @@ class Mrc063FailureFirstTests(unittest.TestCase):
                 self.assertEqual("UNKNOWN", receipt["usage_status"])
                 self.assertEqual({}, receipt["usage"])
                 self.assertNotIn("must-not-persist", json.dumps(receipt))
+                self.assertEqual(
+                    "[REDACTED_SENSITIVE_PROVIDER_DETAIL]",
+                    receipt["provider_error_detail"],
+                )
 
     def test_socket_timeout_and_url_error_are_unknown_single_attempts(self) -> None:
         failures = (socket.timeout("mock timeout"), urllib.error.URLError("mock disconnect"))
@@ -205,16 +258,8 @@ class Mrc063FailureFirstTests(unittest.TestCase):
         schema = harness.build_adjudication_json_schema(coverage)
         valid = {
             "coverage_digest_sha256": harness.canonical_digest(coverage),
-            "material_root_causes": [{
-                "observed": False,
-                "locatable": False,
-                "dimension": "contribution",
-                "style_only": True,
-                "hold_only": False,
-                "verification_only": False,
-                "expected_benefit_exceeds_risk": False,
-                "scope": "local",
-            }],
+            "material_root_causes": [_cause("contribution", material=False)],
+            "affirmative_sufficiency": _stop_sufficiency(),
             "evidence_hold_codes": [],
             "submission_hold_codes": [],
             "protected": ["保持当前论点上限。"],
@@ -254,34 +299,35 @@ class Mrc063FailureFirstTests(unittest.TestCase):
                 {key for key in receipt if key.endswith("keys")},
             )
 
-    def test_candidate_exact_set_receipts_cover_missing_extra_duplicate_and_positive_matrix(self) -> None:
+    def test_candidate_lower_bound_receipts_cover_missing_addition_duplicate_and_positive_matrix(self) -> None:
         coverage = harness.validate_coverage(
             _coverage(["contribution", "methods_and_research_design"])
         )
         positive = {
             "material_root_causes": [
-                {"affects": ["methods_and_research_design"]},
-                {"affects": ["contribution"]},
+                _cause("methods_and_research_design"),
+                _cause("contribution"),
+                _cause("theory_and_concepts", required=False),
             ]
         }
-        receipt = harness.validate_candidate_exact_set(coverage, positive)
+        receipt = harness.validate_candidate_binding(coverage, positive)
         self.assertEqual([], receipt["missing_candidates"])
-        self.assertEqual([], receipt["extra_candidates"])
+        self.assertEqual(["theory_and_concepts"], receipt["independent_additions"])
         self.assertEqual([], receipt["duplicate_candidates"])
         cases = {
-            "missing": {"material_root_causes": [{"affects": ["contribution"]}]},
-            "extra": {
+            "missing": {"material_root_causes": [_cause("contribution")]},
+            "ungrounded": {
                 "material_root_causes": [
-                    {"affects": ["contribution"]},
-                    {"affects": ["methods_and_research_design"]},
-                    {"affects": ["theory_and_concepts"]},
+                    _cause("contribution"),
+                    _cause("methods_and_research_design"),
+                    _cause("theory_and_concepts", required=False, material=False),
                 ]
             },
             "duplicate": {
                 "material_root_causes": [
-                    {"affects": ["contribution"]},
-                    {"affects": ["contribution"]},
-                    {"affects": ["methods_and_research_design"]},
+                    _cause("contribution"),
+                    _cause("contribution"),
+                    _cause("methods_and_research_design"),
                 ]
             },
         }
@@ -289,22 +335,22 @@ class Mrc063FailureFirstTests(unittest.TestCase):
             with self.subTest(label=label), self.assertRaises(
                 harness.CandidateSetContractError
             ) as raised:
-                harness.validate_candidate_exact_set(coverage, state)
+                harness.validate_candidate_binding(coverage, state)
             failed = raised.exception.contract_receipt
-            self.assertEqual(
-                {
-                    "required_candidates", "observed_candidates", "missing_candidates",
-                    "extra_candidates", "duplicate_candidates",
-                },
-                {key for key in failed if key.endswith("candidates")},
-            )
-            self.assertTrue(failed[f"{label}_candidates"])
+            failed_key = {
+                "missing": "missing_candidates",
+                "ungrounded": "ungrounded_additions",
+                "duplicate": "duplicate_candidates",
+            }[label]
+            self.assertTrue(failed[failed_key])
 
         for candidates in ([], ["contribution"], ["contribution", "methods_and_research_design"]):
             with self.subTest(positive_count=len(candidates)):
                 current = harness.validate_coverage(_coverage(list(candidates)))
-                state = {"material_root_causes": [{"affects": [item]} for item in reversed(candidates)]}
-                harness.validate_candidate_exact_set(current, state)
+                state = {
+                    "material_root_causes": [_cause(item) for item in reversed(candidates)]
+                }
+                harness.validate_candidate_binding(current, state)
 
     def test_gui_truth_table_and_configuration_failure(self) -> None:
         self.assertEqual("completed", reduce_gui_terminal_state("SUCCEEDED", "PASS"))
@@ -326,6 +372,7 @@ class Mrc063FailureFirstTests(unittest.TestCase):
         adjudication = {
             "coverage_digest_sha256": harness.canonical_digest(coverage),
             "material_root_causes": [],
+            "affirmative_sufficiency": _stop_sufficiency(),
             "evidence_hold_codes": [],
             "submission_hold_codes": [],
             "protected": ["UNPUBLISHED-CANDIDATE-NATURAL-LANGUAGE"],
@@ -370,14 +417,20 @@ class Mrc063FailureFirstTests(unittest.TestCase):
                     model="gemini-3.6-flash",
                     confirm_complete_current_manuscript=True,
                     manuscript_identity="synthetic-candidate-mismatch",
+                    provider_transmission_consent=True,
                 ),
                 event_sink=sink,
             )
         runtime = result.as_dict()["runtime"]
+        minimal = result.as_dict()["minimal_receipt"]
         self.assertEqual("HOLD", runtime["machine_status"])
         self.assertEqual("NOT_STARTED", runtime["presentation_status"])
         self.assertIsNone(runtime["machine_receipt"]["authoritative_presentation_source"])
         self.assertFalse(runtime["machine_receipt"]["authoritative_candidate_state"])
+        self.assertEqual("TECHNICAL_EXECUTION_HOLD", minimal["reason_category"])
+        self.assertEqual("adjudication_contract", minimal["failed_stage"])
+        self.assertEqual([], minimal["evidence_hold_codes"])
+        self.assertEqual([], minimal["submission_hold_codes"])
         diagnostic = runtime["machine_receipt"]["bounded_contract_failure"]
         self.assertEqual(["contribution"], diagnostic["missing_candidates"])
         self.assertEqual(2, runtime["physical_request_attempt_count"])

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import socket
 import time
 import urllib.error
@@ -14,6 +15,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Mapping
 
 from . import __version__
+from .harness import SCHEMA_DEFINITION_LINT_VERSION, validate_schema_definition
 
 class ProviderConfigurationError(ValueError):
     """Raised when a provider lacks a safe, complete configuration."""
@@ -49,7 +51,50 @@ _STAGE_TIMEOUT_SECONDS: dict[str, dict[str, float]] = {
     },
 }
 _RETRYABLE_HTTP_STATUSES = frozenset({429, 502, 503, 504})
-PROVIDER_REQUEST_TRANSACTION_VERSION = "mrc-provider-request-transaction-1.0"
+PROVIDER_REQUEST_TRANSACTION_VERSION = "mrc-provider-request-transaction-2.0"
+PROVIDER_ERROR_DETAIL_CONTRACT_VERSION = "mrc-provider-error-detail-1.0"
+_PROVIDER_ERROR_DETAIL_MAX_LENGTH = 240
+_SENSITIVE_DETAIL_CONTEXT_RE = re.compile(
+    r"(?:authorization|api[_ -]?key|access[_ -]?token|request[_ -]?body|"
+    r"full[_ -]?text|manuscript|prompt|hidden[_ -]?diagnostic|chain[_ -]?of[_ -]?thought|cot)\s*[:=]",
+    re.I,
+)
+_SECRET_TOKEN_RE = re.compile(
+    r"(?:sk-[A-Za-z0-9_-]{8,}|AIza[0-9A-Za-z_-]{12,}|AKIA[0-9A-Z]{12,}|"
+    r"Bearer\s+[A-Za-z0-9._~+/-]{8,})",
+    re.I,
+)
+_OPAQUE_TOKEN_RE = re.compile(r"\b[A-Za-z0-9_-]{40,}\b")
+
+
+def sanitize_provider_error_detail(value: Any) -> str | None:
+    """Return one bounded diagnostic line without request or secret-bearing content."""
+
+    if not isinstance(value, str):
+        return None
+    detail = " ".join(value.split()).strip()
+    if not detail:
+        return None
+    if _SENSITIVE_DETAIL_CONTEXT_RE.search(detail):
+        return "[REDACTED_SENSITIVE_PROVIDER_DETAIL]"
+    detail = _SECRET_TOKEN_RE.sub("[REDACTED]", detail)
+    detail = _OPAQUE_TOKEN_RE.sub("[REDACTED]", detail)
+    if len(detail) > _PROVIDER_ERROR_DETAIL_MAX_LENGTH:
+        detail = detail[: _PROVIDER_ERROR_DETAIL_MAX_LENGTH - 3].rstrip() + "..."
+    return detail or None
+
+
+def _bounded_provider_error_scalar(value: Any) -> str | int | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, int):
+        return value
+    if not isinstance(value, str):
+        return None
+    clean = " ".join(value.split()).strip()
+    if not clean or len(clean) > 64 or not re.fullmatch(r"[A-Za-z0-9_.:/-]+", clean):
+        return None
+    return clean
 
 
 def provider_stage_timeout_seconds(
@@ -335,11 +380,25 @@ def _apply_reasoning_option(payload: dict[str, Any], provider: str, model: str, 
     return selected
 
 
-def load_provider_config(provider: str, *, model: str | None = None) -> ProviderConfig:
+def resolve_provider_selection(
+    provider: str,
+    *,
+    model: str | None = None,
+) -> tuple[ProviderSpec, str]:
+    """Resolve provider/model identity without reading an API key or endpoint."""
+
     key = provider.casefold().strip()
     spec = PROVIDERS.get(key)
     if spec is None:
         raise ProviderConfigurationError("provider must be deepseek, kimi, or gemini")
+    selected_model = (model or os.environ.get(spec.model_variable) or spec.default_model).strip()
+    if not selected_model or any(character.isspace() for character in selected_model):
+        raise ProviderConfigurationError("model name must be one non-empty token")
+    return spec, selected_model
+
+
+def load_provider_config(provider: str, *, model: str | None = None) -> ProviderConfig:
+    spec, selected_model = resolve_provider_selection(provider, model=model)
     api_key = ""
     key_variable = spec.key_variables[0]
     for variable in spec.key_variables:
@@ -351,9 +410,6 @@ def load_provider_config(provider: str, *, model: str | None = None) -> Provider
     if not api_key:
         variables = " or ".join(spec.key_variables)
         raise ProviderConfigurationError(f"missing API key environment variable: {variables}")
-    selected_model = (model or os.environ.get(spec.model_variable) or spec.default_model).strip()
-    if not selected_model or any(character.isspace() for character in selected_model):
-        raise ProviderConfigurationError("model name must be one non-empty token")
     base_url = (os.environ.get(spec.base_url_variable) or spec.default_base_url).strip().rstrip("/")
     if not base_url.startswith(("https://", "http://127.0.0.1", "http://localhost")):
         raise ProviderConfigurationError("provider base URL must use HTTPS, except localhost test endpoints")
@@ -466,6 +522,11 @@ class ChatCompletionClient:
         schema_sha256: str | None = None,
         coverage_digest_sha256: str | None = None,
     ) -> CompletionResult:
+        schema_lint_receipt = (
+            validate_schema_definition(json_schema)
+            if json_schema is not None
+            else None
+        )
         payload: dict[str, Any] = {
             "model": self.config.model,
             "messages": messages,
@@ -532,11 +593,21 @@ class ChatCompletionClient:
             "retry_after": None,
             "error_class": None,
             "error_summary": None,
+            "provider_error_detail_contract_version": PROVIDER_ERROR_DETAIL_CONTRACT_VERSION,
+            "provider_error_status": None,
+            "provider_error_code": None,
+            "provider_error_detail": None,
             "usage_status": "UNKNOWN",
             "usage": {},
             "schema_sha256": schema_sha256,
             "coverage_digest_sha256": coverage_digest_sha256,
             "schema_delivery_mode": capability.schema_delivery_mode,
+            "schema_definition_lint_contract_version": (
+                SCHEMA_DEFINITION_LINT_VERSION if schema_lint_receipt is not None else None
+            ),
+            "schema_definition_lint_status": (
+                schema_lint_receipt.get("status") if schema_lint_receipt is not None else None
+            ),
             "started_at": _utc_now(),
             "finished_at": None,
         }
@@ -564,14 +635,18 @@ class ChatCompletionClient:
                 request_receipts=(dict(receipt),),
             )
         except urllib.error.HTTPError as exc:
-            detail = ""
+            detail = None
+            provider_error_status = None
+            provider_error_code = None
             try:
                 error_payload = json.loads(exc.read(64 * 1024).decode("utf-8"))
-                candidate = error_payload.get("error", {}).get("message")
-                if isinstance(candidate, str):
-                    detail = " ".join(candidate.split())[:500]
+                error_object = error_payload.get("error", {})
+                if isinstance(error_object, Mapping):
+                    provider_error_status = _bounded_provider_error_scalar(error_object.get("status"))
+                    provider_error_code = _bounded_provider_error_scalar(error_object.get("code"))
+                    detail = sanitize_provider_error_detail(error_object.get("message"))
             except (AttributeError, UnicodeDecodeError, json.JSONDecodeError):
-                detail = ""
+                detail = None
             receipt.update(
                 {
                     "provider_outcome": (
@@ -581,11 +656,15 @@ class ChatCompletionClient:
                     "retry_after": _bounded_retry_after(exc.headers),
                     "error_class": "HTTPError",
                     "error_summary": f"HTTP status {exc.code}",
+                    "provider_error_status": provider_error_status,
+                    "provider_error_code": provider_error_code,
+                    "provider_error_detail": detail,
                     "finished_at": _utc_now(),
                 }
             )
+            safe_suffix = f"; provider detail: {detail}" if detail else ""
             raise ProviderRequestError(
-                f"provider HTTP request failed with status {exc.code}; automatic resend is disabled",
+                f"provider HTTP request failed with status {exc.code}{safe_suffix}; automatic resend is disabled",
                 request_receipts=(receipt,),
             ) from exc
         except (TimeoutError, socket.timeout) as exc:

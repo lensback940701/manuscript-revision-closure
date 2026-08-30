@@ -51,6 +51,11 @@ authority rather than issue count:
 `STOP_REVISING`
 
 : No current material root cause justifies reopening substantive revision.
+  This is an affirmative two-pass conclusion, not the default produced by an
+  empty issue list. Coverage and independent adjudication must each positively
+  establish sufficiency for the contribution, whole-paper argument,
+  theory/concepts, methods/research design, evidence/analysis, and section
+  roles/coherence. An unexplained absence of candidates cannot authorize STOP.
   Optional polish, verification, rights, format, metadata, comments, or
   other submission holds may remain. Do not start another generic AI revision
   merely because another wording is imaginable. Non-blocking opportunities,
@@ -90,6 +95,25 @@ The expected repair benefit must exceed regression risk and the repair scope
 must be genuinely material. Do not derive the verdict from weighted scores,
 raw issue counts, hedge counts, proper-name counts, citation-link presence,
 generic perfection, acceptance probability, or AI-style detection.
+
+Coverage candidates are a required lower bound for independent adjudication,
+not a ceiling. The second pass must account for each candidate exactly once and
+may add an omitted canonical dimension only when the complete manuscript makes
+the concern observed, locatable, material, and worth repairing above regression
+risk. Unknown, duplicate, unlocatable, speculative, style-only, hold-only, or
+verification-only additions fail closed. A substantive author decision is not
+disguised as an external hold when resolving it could change the current
+manuscript's contribution, validity, method credibility, evidence ceiling, or
+whole-paper coherence.
+
+Evidence-bound caution is not itself a reason to revise: retain real claim
+ceilings, source-status distinctions, scope conditions, method limitations,
+rivals, contradictions, delays, reversals, and negative findings. Nor is
+caution affirmative proof of readiness. If stacked caveats, work-log narration,
+or protection language materially obscures the contribution, theoretical
+increment, method assessability, or argument closure, classify the observed
+effect under the same material-root-cause test. Do not convert stylistic taste,
+an imaginable improvement, or generic reviewer preference into materiality.
 
 Keep a bounded mechanism at the point where the evidence stops when the
 manuscript distinguishes proposal, authorization, report, observation,

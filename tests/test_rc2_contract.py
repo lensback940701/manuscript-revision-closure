@@ -50,6 +50,7 @@ class RC2ContractTests(unittest.TestCase):
             "bounded_scope": False,
             "current_manuscript_identity": "synthetic-manuscript-rc2",
             "material_root_causes": [],
+            "affirmative_stop_gate_passed": True,
             # Empty RC1.x placeholders are inert; non-empty legacy fields are
             # migrated only through the exact adapter.
             "evidence_holds": [],

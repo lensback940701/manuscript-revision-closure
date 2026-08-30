@@ -1,16 +1,16 @@
-# Manuscript Revision Closure Standalone 0.6.3：原生事务与状态完整性审计
+# Manuscript Revision Closure Standalone 0.6.4：原生事务与状态完整性审计
 
 ## 1. 锁定范围
 
 - 目标仓库：`lensback940701/manuscript-revision-closure`
-- 0.6.3 唯一施工基线：`32240b62344cf504e39342967b6b2ae158abab8f`
-- 0.6.3 修复分支：`repair/0.6.3-provider-contract-state-integrity`
-- Standalone：`0.6.3`
+- 0.6.4 唯一施工基线：`ed559d73193a59e475807fd9016a6b034ed906f0`
+- 0.6.4 修复分支：`repair/0.6.4-intake-technical-hold-diagnostics`
+- Standalone：`0.6.4`
 - Skill contract：`0.2.1`
 - Codex 固定参考：`d5caceccb1ee5bf94c081b995575ce4860e0912b`
 - 实现阶段检查的 Codex main：`6be2a6ca952ac9f70676ce4dd07fda27175aa9dd`
 
-0.6.2 的 presentation transaction 保持为正向 donor；0.6.3 只修复 provider 请求、schema delivery、动态 candidate exact-set、machine/presentation 分流与物理计数，不改变 Skill `0.2.1` 的业务裁决。
+0.6.3 的 provider/schema/state transaction 保持为正向 donor；0.6.4 以 `mrc-local-technical-preflight-1.0`、`mrc-provider-transmission-consent-1.0` 和 `mrc-semantic-manuscript-basis-1.0` 收敛全文进入路径，同时保留 technical-HOLD、bounded provider error detail 与 Skill `0.2.1` 的业务裁决边界。
 
 ## 2. Failure-first
 
@@ -33,10 +33,13 @@ provider completion
 
 ```text
 immutable manuscript read
-→ intake gate
-→ coverage provider completion
+→ thin local technical preflight（格式仅 advisory）
+→ consume one-run file-hash/provider/model consent
+→ coverage provider completion + semantic manuscript-basis decision
 → commit coverage bounded receipt and usage
 → coverage validation
+→ if basis INSUFFICIENT: stop with coverage=1/adjudication=0/no machine verdict/no presentation source
+→ if basis SUFFICIENT: continue
 → adjudication provider completion
 → commit adjudication bounded receipt and usage
 → coverage digest binding
@@ -69,7 +72,9 @@ usage_status = COMPLETE | PARTIAL | UNKNOWN
 
 ## 5. Provider completion 与 usage
 
-`standalone/providers.py` 在每个物理 HTTP attempt 发出前建立 bounded receipt，并在结果明确后更新。receipt 只包含 request identity、stage、provider/model/reasoning、timeout、outcome、HTTP status、bounded error class/summary、usage status、schema hashes 与时间戳；不含完整请求体、稿件、Authorization 或原始 response。
+`standalone/providers.py` 在每个物理 HTTP attempt 发出前建立 bounded receipt，并在结果明确后更新。`mrc-provider-request-transaction-2.0` 可包含 HTTP status 及经 `mrc-provider-error-detail-1.0` 处理的 provider status/code/单行限长 detail。确定性 sanitizer 遮蔽 secret、Authorization、请求体、稿件、prompt、hidden diagnostics 与 chain-of-thought 语境；原始 response 不持久化。
+
+所有传给 provider 的 JSON schema 还先通过 `mrc-schema-definition-lint-1.0`。lint receipt 只保留版本、schema hash、bounded failed path/error 与 `request_dispatched=false`，不保留 schema 原文、prompt 或稿件。零候选 adjudication 使用 `minItems=0`、有限 canonical 上限与非空 canonical dimension enum，兼容 Moonshot strict schema，同时允许真正独立的第二阶段恢复 grounded coverage miss。candidate binding 与 affirmative STOP gate 均在冻结 machine state 前完成；presentation transaction 不能改变这些裁决字段。
 
 - coverage、adjudication、presentation repair 与 interpretation 均强制 `max_transient_retries=0`；
 - Kimi presentation repair timeout 为 900 秒；

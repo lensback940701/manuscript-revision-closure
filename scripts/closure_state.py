@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import re
+from copy import deepcopy
 from typing import Any, Mapping
 
 
@@ -63,6 +64,9 @@ COMMON_CARD_FIELDS = frozenset(
 STOP_CARD_OPTIONAL_FIELDS = frozenset(
     {"Parked opportunities", "Parked opportunities note"}
 )
+TECHNICAL_CARD_OPTIONAL_FIELDS = frozenset(
+    {"Failed stage", "Technical hold contract version"}
+)
 PUBLIC_PROHIBITED_KEYS = frozenset(
     {
         "internal_review",
@@ -93,6 +97,13 @@ RECEIPT_ALLOWED_FIELDS = frozenset(
         "skill_version",
         "artifact_sha256",
         "semantic_content_sha256",
+        "technical_hold_contract_version",
+        "failed_stage",
+        "whole_manuscript_basis",
+        "basis_reason_codes",
+        "basis_explanation",
+        "basis_contract_version",
+        "provider_transmission_consent",
     }
 )
 SHA256_RE = re.compile(r"^[0-9a-fA-F]{64}$")
@@ -106,6 +117,23 @@ RECEIPT_SCHEMA_LEGACY_0_1 = "LEGACY_0_1"
 RECEIPT_SCHEMA_CANONICAL_0_2 = "CANONICAL_0_2"
 RECEIPT_SCHEMA_UNSUPPORTED = "UNSUPPORTED"
 SKILL_VERSION = "0.2.1"
+TECHNICAL_HOLD_CONTRACT_VERSION = "mrc-technical-hold-receipt-1.0"
+TECHNICAL_FAILED_STAGES = frozenset(
+    {
+        "local_preflight",
+        "provider_configuration",
+        "coverage_schema_definition",
+        "coverage_context_budget",
+        "coverage_provider",
+        "coverage_contract",
+        "coverage_incomplete",
+        "adjudication_context_budget",
+        "adjudication_schema_definition",
+        "adjudication_provider",
+        "adjudication_contract",
+        "contradiction_gate",
+    }
+)
 
 
 def _parse_receipt_schema_version(value: Any) -> str:
@@ -241,6 +269,8 @@ DECISION_REASON_CATEGORIES = frozenset(
         "LOCAL_MATERIAL_ROOT_CAUSE",
         "CENTRAL_MATERIAL_ROOT_CAUSE",
         "INSUFFICIENT_WHOLE_MANUSCRIPT_BASIS",
+        "TECHNICAL_EXECUTION_HOLD",
+        "USER_PROVIDER_TRANSMISSION_NOT_AUTHORIZED",
         "PRIOR_CLOSURE_STILL_VALID",
         "ARTIFACT_CHANGED_CONTENT_STABLE",
         "VERIFIED_ARTIFACT_ONLY_DRIFT",
@@ -262,6 +292,14 @@ FORMAL_TIP_ZH = "诊断完成；修订执行应另行授权。请使用经过核
 FORMAL_TIP_EN = "Diagnosis is complete; any revision must be separately authorized. Use a trusted manuscript review-and-revision skill, or wait for a future open-source release."
 STOP_PARKED_NOTE_EN = "These are not reasons to reopen the current manuscript. Reconsider them only if a new reviewer, journal requirement, evidence conflict, or author decision changes the task."
 STOP_PARKED_NOTE_ZH = "这些不是重新打开当前稿件的理由。只有新的审稿人要求、期刊要求、证据冲突或作者决定改变任务时，才重新考虑它们。"
+BASIS_PUBLIC_REASONS_EN = {
+    "FRAGMENT_OR_EXCERPT_ONLY": "The first coverage pass found that the supplied text is materially only a fragment or excerpt, so no whole-manuscript revision-closure verdict was formed.",
+    "SUBSTANTIVE_MATERIAL_MISSING": "The first coverage pass found that substantive manuscript material needed for a whole-manuscript revision-closure judgment is missing.",
+    "INSUFFICIENT_ANALYTIC_CONTENT": "The first coverage pass found too little substantive argument, method, evidence, or analysis for a whole-manuscript revision-closure judgment.",
+    "UNREADABLE_OR_CORRUPTED_EXTRACT": "The first coverage pass found that the extracted text is too unreadable or corrupted for a whole-manuscript revision-closure judgment.",
+    "IDENTITY_OR_SCOPE_AMBIGUOUS": "The first coverage pass could not establish a sufficiently clear whole-manuscript identity or scope for revision closure.",
+    "OTHER_SUBSTANTIVE_BASIS_GAP": "The first coverage pass found a substantive whole-manuscript basis gap, so no revision-closure verdict was formed.",
+}
 
 # These patterns apply to user-facing directions/protected text/parked text,
 # not to hold labels. They are best-effort leakage checks, not a claim of
@@ -337,6 +375,8 @@ NON_HOLD_DETAIL_TERMS = (
 NEXT_PRIOR_STOP = "Keep the prior closure decision; do not start a new generic AI review without a legal invalidation event."
 NEXT_STOP = "Do not start another generic AI revision; address any listed evidence or submission hold separately if authorized."
 NEXT_UNASSESSED = "Provide one complete, identifiable current manuscript and the basis needed for a whole-manuscript assessment; this lane does not rewrite bounded material."
+NEXT_TECHNICAL_HOLD = "Resolve the reported technical execution failure, then explicitly start one new assessment; do not treat this receipt as a manuscript verdict."
+NEXT_PROVIDER_CONSENT = "Explicitly confirm provider transmission for one new run after verifying the bound file hash, provider, and model; cancellation sends nothing."
 NEXT_ONE_ROUND = "Authorize one bounded revision round only, then rerun closure; this lane does not execute the round."
 NEXT_REOPEN = "Obtain a separately authorized substantive review/revision workflow; this closure lane does not edit the manuscript."
 NEXT_REWRITE_SUFFIX = " The request to rewrite is outside this read-only lane."
@@ -512,7 +552,14 @@ def _allowed_next_actions(verdict: str) -> frozenset[str]:
                 NEXT_PRIOR_STOP + NEXT_REWRITE_SUFFIX,
             }
         ),
-        "UNASSESSED": frozenset({NEXT_UNASSESSED, NEXT_UNASSESSED + NEXT_REWRITE_SUFFIX}),
+        "UNASSESSED": frozenset(
+            {
+                NEXT_UNASSESSED,
+                NEXT_UNASSESSED + NEXT_REWRITE_SUFFIX,
+                NEXT_TECHNICAL_HOLD,
+                NEXT_PROVIDER_CONSENT,
+            }
+        ),
         "ONE_BOUNDED_ROUND": frozenset(
             {NEXT_ONE_ROUND, NEXT_ONE_ROUND + NEXT_REWRITE_SUFFIX}
         ),
@@ -531,7 +578,13 @@ def _allowed_receipt_reason_categories(verdict: str) -> frozenset[str]:
         "STOP_REVISING": frozenset({"NO_MATERIAL_ROOT_CAUSE"}) | STOP_PRIOR_REASON_CATEGORIES,
         "ONE_BOUNDED_ROUND": frozenset({"LOCAL_MATERIAL_ROOT_CAUSE"}),
         "REOPEN_SUBSTANTIVE_REVISION": frozenset({"CENTRAL_MATERIAL_ROOT_CAUSE"}),
-        "UNASSESSED": frozenset({"INSUFFICIENT_WHOLE_MANUSCRIPT_BASIS"}),
+        "UNASSESSED": frozenset(
+            {
+                "INSUFFICIENT_WHOLE_MANUSCRIPT_BASIS",
+                "TECHNICAL_EXECUTION_HOLD",
+                "USER_PROVIDER_TRANSMISSION_NOT_AUTHORIZED",
+            }
+        ),
     }
     try:
         return categories[verdict]
@@ -566,6 +619,10 @@ def _validate_receipt_cross_fields(
         expected = frozenset({NEXT_ONE_ROUND, NEXT_ONE_ROUND + NEXT_REWRITE_SUFFIX})
     elif reason_category == "CENTRAL_MATERIAL_ROOT_CAUSE":
         expected = frozenset({NEXT_REOPEN, NEXT_REOPEN + NEXT_REWRITE_SUFFIX})
+    elif reason_category == "TECHNICAL_EXECUTION_HOLD":
+        expected = frozenset({NEXT_TECHNICAL_HOLD})
+    elif reason_category == "USER_PROVIDER_TRANSMISSION_NOT_AUTHORIZED":
+        expected = frozenset({NEXT_PROVIDER_CONSENT})
     else:
         expected = frozenset({NEXT_UNASSESSED, NEXT_UNASSESSED + NEXT_REWRITE_SUFFIX})
     if next_action not in expected:
@@ -602,6 +659,19 @@ def _validate_receipt(receipt: Any) -> dict[str, Any]:
         receipt.get("next_permitted_action"),
         "prior_receipt",
     )
+    technical_version = receipt.get("technical_hold_contract_version")
+    failed_stage = receipt.get("failed_stage")
+    if receipt.get("reason_category") == "TECHNICAL_EXECUTION_HOLD":
+        if technical_version != TECHNICAL_HOLD_CONTRACT_VERSION:
+            raise ClosureStateError(
+                "prior_receipt technical hold must use the registered technical contract version"
+            )
+        if not isinstance(failed_stage, str) or failed_stage not in TECHNICAL_FAILED_STAGES:
+            raise ClosureStateError("prior_receipt technical hold has an invalid failed_stage")
+    elif technical_version is not None or failed_stage is not None:
+        raise ClosureStateError(
+            "prior_receipt technical fields require TECHNICAL_EXECUTION_HOLD"
+        )
     code_fields_present = {
         "evidence_hold_codes" in receipt,
         "submission_hold_codes" in receipt,
@@ -672,6 +742,52 @@ def _validate_receipt(receipt: Any) -> dict[str, Any]:
     for field in ("artifact_sha256", "semantic_content_sha256"):
         if field in receipt and receipt[field] is None:
             raise ClosureStateError(f"prior_receipt.{field} must be a SHA-256 when supplied")
+    basis_fields = {
+        "whole_manuscript_basis",
+        "basis_reason_codes",
+        "basis_explanation",
+        "basis_contract_version",
+    }
+    present_basis_fields = basis_fields.intersection(receipt)
+    if present_basis_fields and present_basis_fields != basis_fields:
+        raise ClosureStateError("prior_receipt semantic basis fields must be present together")
+    if present_basis_fields:
+        if receipt["whole_manuscript_basis"] not in {"SUFFICIENT", "INSUFFICIENT"}:
+            raise ClosureStateError("prior_receipt whole_manuscript_basis is invalid")
+        codes = receipt["basis_reason_codes"]
+        if not isinstance(codes, list) or not codes or any(
+            not isinstance(item, str) or not item.strip() for item in codes
+        ):
+            raise ClosureStateError("prior_receipt basis_reason_codes must be a non-empty string list")
+        explanation = receipt["basis_explanation"]
+        if not isinstance(explanation, str) or not explanation.strip() or len(explanation) > 240:
+            raise ClosureStateError("prior_receipt basis_explanation must be bounded text")
+        if receipt["basis_contract_version"] != "mrc-semantic-manuscript-basis-1.0":
+            raise ClosureStateError("prior_receipt basis_contract_version is invalid")
+    consent = receipt.get("provider_transmission_consent")
+    if consent is not None:
+        if not isinstance(consent, Mapping) or set(consent) != {
+            "contract_version",
+            "status",
+            "binding_match",
+            "artifact_sha256",
+            "provider",
+            "model",
+            "recorded_at",
+        }:
+            raise ClosureStateError("prior_receipt provider consent must match the compact schema")
+        if consent["contract_version"] != "mrc-provider-transmission-consent-1.0":
+            raise ClosureStateError("prior_receipt provider consent contract version is invalid")
+        if consent["status"] not in {"CONFIRMED", "NOT_AUTHORIZED"}:
+            raise ClosureStateError("prior_receipt provider consent status is invalid")
+        if not isinstance(consent["binding_match"], bool):
+            raise ClosureStateError("prior_receipt provider consent binding_match must be boolean")
+        _hash_value(consent["artifact_sha256"], "prior_receipt.provider_transmission_consent.artifact_sha256")
+        for field in ("provider", "model", "recorded_at"):
+            if not isinstance(consent[field], str) or not consent[field].strip():
+                raise ClosureStateError(f"prior_receipt provider consent {field} must be text")
+        if not ASSESSMENT_TIME_RE.fullmatch(consent["recorded_at"].strip()):
+            raise ClosureStateError("prior_receipt provider consent recorded_at is invalid")
     return {
         "manuscript_identity": manuscript_identity.strip(),
         "verdict": verdict,
@@ -682,6 +798,9 @@ def _validate_receipt(receipt: Any) -> dict[str, Any]:
             receipt.get("semantic_content_sha256"),
             "prior_receipt.semantic_content_sha256",
         ),
+        "reason_category": receipt.get("reason_category"),
+        "technical_hold_contract_version": technical_version,
+        "failed_stage": failed_stage,
     }
 
 
@@ -1032,7 +1151,11 @@ def _validate_decision_mapping(decision: Any) -> dict[str, Any]:
     reason_category = decision["reason_category"]
     if not isinstance(reason_category, str) or reason_category not in DECISION_REASON_CATEGORIES:
         raise ClosureStateError("decision.reason_category must be a canonical category")
-    if verdict == "UNASSESSED" and reason_category != "INSUFFICIENT_WHOLE_MANUSCRIPT_BASIS":
+    if verdict == "UNASSESSED" and reason_category not in {
+        "INSUFFICIENT_WHOLE_MANUSCRIPT_BASIS",
+        "TECHNICAL_EXECUTION_HOLD",
+        "USER_PROVIDER_TRANSMISSION_NOT_AUTHORIZED",
+    }:
         raise ClosureStateError("UNASSESSED decision has an incompatible reason category")
     if verdict == "ONE_BOUNDED_ROUND" and reason_category != "LOCAL_MATERIAL_ROOT_CAUSE":
         raise ClosureStateError("ONE_BOUNDED_ROUND decision has an incompatible reason category")
@@ -1116,6 +1239,26 @@ def decide_state(state: Mapping[str, Any]) -> dict[str, Any]:
     )
     receipt_assessment = _receipt_assessment(state)
     prior_stale = bool(receipt_assessment["stale"])
+    technical_hold = _bool(state, "technical_execution_hold")
+    if technical_hold:
+        failed_stage = state.get("technical_failed_stage")
+        if not isinstance(failed_stage, str) or failed_stage not in TECHNICAL_FAILED_STAGES:
+            raise ClosureStateError("technical execution hold requires one registered failed stage")
+        return {
+            "verdict": "UNASSESSED",
+            "reason_category": "TECHNICAL_EXECUTION_HOLD",
+            "prior_receipt_valid": False,
+            "prior_receipt_stale": prior_stale,
+            "prior_receipt_unverified": bool(receipt_assessment["unverified"]),
+            "material_root_cause": False,
+            "central_root_cause": False,
+            "evidence_hold_codes": evidence_hold_codes,
+            "submission_hold_codes": submission_hold_codes,
+            "protected": _dedupe(_strings(state, "protected")),
+            "lite_suggestions": [],
+            "next_permitted_action": NEXT_TECHNICAL_HOLD,
+            "show_revision_tip": False,
+        }
     if receipt_assessment["valid"]:
         receipt = _validate_receipt(state["prior_receipt"])
         verdict = receipt["verdict"]
@@ -1132,6 +1275,25 @@ def decide_state(state: Mapping[str, Any]) -> dict[str, Any]:
             "protected": _dedupe(_strings(state, "protected")),
             "lite_suggestions": [],
             "next_permitted_action": NEXT_PRIOR_STOP,
+            "show_revision_tip": False,
+        }
+
+    if "provider_transmission_authorized" in state and not _bool(
+        state, "provider_transmission_authorized"
+    ):
+        return {
+            "verdict": "UNASSESSED",
+            "reason_category": "USER_PROVIDER_TRANSMISSION_NOT_AUTHORIZED",
+            "prior_receipt_valid": False,
+            "prior_receipt_stale": prior_stale,
+            "prior_receipt_unverified": bool(receipt_assessment["unverified"]),
+            "material_root_cause": False,
+            "central_root_cause": False,
+            "evidence_hold_codes": evidence_hold_codes,
+            "submission_hold_codes": submission_hold_codes,
+            "protected": _dedupe(_strings(state, "protected")),
+            "lite_suggestions": [],
+            "next_permitted_action": NEXT_PROVIDER_CONSENT,
             "show_revision_tip": False,
         }
 
@@ -1182,6 +1344,10 @@ def decide_state(state: Mapping[str, Any]) -> dict[str, Any]:
         reason_category = "LOCAL_MATERIAL_ROOT_CAUSE"
         next_action = NEXT_ONE_ROUND
     else:
+        if not _bool(state, "affirmative_stop_gate_passed"):
+            raise ClosureStateError(
+                "STOP_REVISING requires a completed two-stage affirmative sufficiency gate"
+            )
         verdict = "STOP_REVISING"
         reason_category = "NO_MATERIAL_ROOT_CAUSE"
         next_action = NEXT_STOP
@@ -1226,7 +1392,11 @@ def validate_public_card(card: Mapping[str, Any]) -> None:
     verdict = card["Verdict"]
     if verdict not in PUBLIC_VERDICTS:
         raise ClosureStateError("public card uses an unknown verdict")
-    allowed = COMMON_CARD_FIELDS | STOP_CARD_OPTIONAL_FIELDS if verdict == "STOP_REVISING" else COMMON_CARD_FIELDS
+    allowed = COMMON_CARD_FIELDS
+    if verdict == "STOP_REVISING":
+        allowed |= STOP_CARD_OPTIONAL_FIELDS
+    if verdict == "UNASSESSED":
+        allowed |= TECHNICAL_CARD_OPTIONAL_FIELDS
     unknown = set(card).difference(allowed)
     if unknown:
         raise ClosureStateError("public card contains unknown fields: " + ", ".join(sorted(unknown)))
@@ -1281,6 +1451,21 @@ def validate_public_card(card: Mapping[str, Any]) -> None:
         raise ClosureStateError("Parked opportunities are STOP_REVISING-only")
     if verdict == "UNASSESSED" and (has_parked or has_note):
         raise ClosureStateError("UNASSESSED cannot contain parked opportunities")
+    has_failed_stage = "Failed stage" in card
+    has_technical_version = "Technical hold contract version" in card
+    technical_reason = (
+        card["Reason"]
+        == "Local technical preflight passed, but the machine assessment did not form because a bounded technical execution stage failed."
+    )
+    if technical_reason:
+        if not has_failed_stage or not has_technical_version:
+            raise ClosureStateError("technical card requires failed stage and contract version")
+        if card["Failed stage"] not in TECHNICAL_FAILED_STAGES:
+            raise ClosureStateError("technical card has an invalid failed stage")
+        if card["Technical hold contract version"] != TECHNICAL_HOLD_CONTRACT_VERSION:
+            raise ClosureStateError("technical card has an invalid contract version")
+    elif has_failed_stage or has_technical_version:
+        raise ClosureStateError("technical card fields require a technical execution reason")
     if verdict == "STOP_REVISING":
         if has_note and not has_parked:
             raise ClosureStateError("parked note requires parked opportunities")
@@ -1309,8 +1494,17 @@ def public_card(state: Mapping[str, Any]) -> dict[str, Any]:
     verdict = decision["verdict"]
     if decision["prior_receipt_valid"]:
         reason = "A valid prior closure decision exists for the same manuscript, and no legal invalidation event was supplied."
+    elif decision["reason_category"] == "USER_PROVIDER_TRANSMISSION_NOT_AUTHORIZED":
+        reason = "Provider transmission was not authorized for this run; no manuscript text was sent and no manuscript or technical judgment was formed."
+    elif decision["reason_category"] == "TECHNICAL_EXECUTION_HOLD":
+        reason = "Local technical preflight passed, but the machine assessment did not form because a bounded technical execution stage failed."
     elif verdict == "UNASSESSED":
-        reason = "A reliable whole-manuscript cutoff cannot be made from the supplied current basis."
+        reason_codes = state.get("whole_manuscript_basis_reason_codes", [])
+        first_code = reason_codes[0] if isinstance(reason_codes, list) and reason_codes else None
+        reason = BASIS_PUBLIC_REASONS_EN.get(
+            first_code,
+            "A reliable whole-manuscript cutoff cannot be made from the supplied current basis.",
+        )
     elif verdict == "REOPEN_SUBSTANTIVE_REVISION":
         reason = "A central material root cause remains capable of affecting the manuscript's contribution, validity, or whole-paper coherence."
     elif verdict == "ONE_BOUNDED_ROUND":
@@ -1333,6 +1527,9 @@ def public_card(state: Mapping[str, Any]) -> dict[str, Any]:
         "Next permitted action": decision["next_permitted_action"],
         "Conditional tip": _conditional_tip(state) if decision["show_revision_tip"] else None,
     }
+    if decision["reason_category"] == "TECHNICAL_EXECUTION_HOLD":
+        card["Failed stage"] = state["technical_failed_stage"]
+        card["Technical hold contract version"] = TECHNICAL_HOLD_CONTRACT_VERSION
     if verdict == "STOP_REVISING":
         parked = _strings(state, "parked_opportunities")
         if parked:
@@ -1353,6 +1550,9 @@ def minimal_receipt(
     artifact_sha256: str | None = None,
     semantic_content_sha256: str | None = None,
     skill_version: str = SKILL_VERSION,
+    failed_stage: str | None = None,
+    basis_receipt: Mapping[str, Any] | None = None,
+    consent_receipt: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Create an allowed minimal receipt without detailed assessment fields."""
 
@@ -1376,9 +1576,20 @@ def minimal_receipt(
         "next_permitted_action": canonical_decision["next_permitted_action"],
         "skill_version": skill_version,
     }
+    if canonical_decision["reason_category"] == "TECHNICAL_EXECUTION_HOLD":
+        if not isinstance(failed_stage, str) or failed_stage not in TECHNICAL_FAILED_STAGES:
+            raise ClosureStateError("technical minimal receipt requires one registered failed_stage")
+        receipt["technical_hold_contract_version"] = TECHNICAL_HOLD_CONTRACT_VERSION
+        receipt["failed_stage"] = failed_stage
+    elif failed_stage is not None:
+        raise ClosureStateError("failed_stage is only valid for a technical minimal receipt")
     if artifact_sha256:
         receipt["artifact_sha256"] = artifact_sha256
     if semantic_content_sha256:
         receipt["semantic_content_sha256"] = semantic_content_sha256
+    if basis_receipt is not None:
+        receipt.update(deepcopy(dict(basis_receipt)))
+    if consent_receipt is not None:
+        receipt["provider_transmission_consent"] = deepcopy(dict(consent_receipt))
     _validate_receipt(receipt)
     return receipt

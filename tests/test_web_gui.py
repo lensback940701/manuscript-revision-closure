@@ -13,6 +13,7 @@ from unittest.mock import patch
 
 
 from standalone.harness import (
+    AFFIRMATIVE_STOP_DIMENSIONS,
     COVERAGE_CONTRACT_VERSION,
     COVERAGE_DIMENSIONS,
     canonical_digest,
@@ -23,6 +24,16 @@ from standalone.web_gui import create_gui_server
 
 CORE_MODEL_STATE = {
     "material_root_causes": [],
+    "affirmative_sufficiency": [
+        {
+            "dimension": dimension,
+            "assessed": True,
+            "affirmative_sufficiency": True,
+            "unresolved_material_concern": False,
+            "sufficiency_reason_code": "AFFIRMATIVE_MANUSCRIPT_SUPPORT",
+        }
+        for dimension in AFFIRMATIVE_STOP_DIMENSIONS
+    ],
     "evidence_hold_codes": [],
     "submission_hold_codes": [],
     "protected": ["保持现有论点上限。"],
@@ -32,10 +43,20 @@ CORE_MODEL_STATE = {
 
 COVERAGE_STATE = {
     "coverage_contract_version": COVERAGE_CONTRACT_VERSION,
+    "whole_manuscript_basis": "SUFFICIENT",
+    "basis_reason_codes": ["SUFFICIENT_SUBSTANTIVE_WHOLE_MANUSCRIPT"],
+    "basis_explanation": "The supplied text contains sufficient substantive whole-manuscript material.",
     "manuscript_identity_confirmed": True,
     "full_span_covered": True,
     "dimensions": [
-        {"dimension": dimension, "applicability": "APPLICABLE", "assessed": True, "status": "CLEAR"}
+        {
+            "dimension": dimension,
+            "applicability": "APPLICABLE",
+            "assessed": True,
+            "status": "CLEAR",
+            "affirmative_sufficiency": True,
+            "sufficiency_reason_code": "AFFIRMATIVE_MANUSCRIPT_SUPPORT",
+        }
         for dimension in COVERAGE_DIMENSIONS
     ],
     "root_cause_candidate_dimensions": [],
@@ -120,6 +141,19 @@ class WebGuiTests(unittest.TestCase):
         except urllib.error.HTTPError as exc:
             return exc.code, exc.read(), dict(exc.headers)
 
+    def _prepare_consent(self, manuscript: Path, provider: str, model: str) -> dict[str, object]:
+        status, body, _headers = self._request(
+            "/api/prepare-consent",
+            token=self.state.token,
+            payload={
+                "manuscript_path": str(manuscript),
+                "provider": provider,
+                "model": model,
+            },
+        )
+        self.assertEqual(200, status, body)
+        return json.loads(body)
+
     def test_page_and_api_require_random_token_and_local_host(self) -> None:
         status, _body, _headers = self._request("/api/status")
         self.assertEqual(403, status)
@@ -151,6 +185,8 @@ class WebGuiTests(unittest.TestCase):
             self.assertNotIn("它不会改变核心裁决，也不会公开思维链或原始隐藏审阅记录", html)
             self.assertNotIn("const document=bundle", html)
             self.assertIn("const doc=bundle&&bundle.document", html)
+            self.assertIn("每次运行都必须重新明确确认", html)
+            self.assertIn("/api/prepare-consent", html)
             self.assertNotIn(opaque_value, html)
             status, body, _headers = self._request("/api/status", token=self.state.token)
             self.assertEqual(200, status)
@@ -200,11 +236,14 @@ class WebGuiTests(unittest.TestCase):
         profile = json.loads(body)
         self.assertEqual(["default"], [item["value"] for item in profile["options"]])
 
-    def test_analysis_api_reuses_fail_closed_core_without_api_when_unconfirmed(self) -> None:
+    def test_analysis_api_records_user_cancellation_without_api(self) -> None:
         marker = "GUI-MANUSCRIPT-CONTENT-MUST-NOT-LEAK"
-        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {}, clear=True):
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+            os.environ, {"DEEPSEEK_API_KEY": "mock"}, clear=True
+        ):
             manuscript = Path(directory) / "paper.md"
             manuscript.write_text(_long_manuscript() + marker, encoding="utf-8")
+            prepared = self._prepare_consent(manuscript, "deepseek", "deepseek-v4-pro")
             status, body, _headers = self._request(
                 "/api/analyze",
                 token=self.state.token,
@@ -216,6 +255,8 @@ class WebGuiTests(unittest.TestCase):
                     "identity": "paper-gui-v1",
                     "confirmed_complete": False,
                     "prior_receipt_path": "",
+                    "consent_token": prepared["consent_token"],
+                    "consent_confirmed": False,
                 },
             )
             self.assertEqual(202, status, body)
@@ -228,7 +269,58 @@ class WebGuiTests(unittest.TestCase):
             self.assertIsNone(snapshot["error"])
             self.assertEqual("UNASSESSED", snapshot["result"]["closure_card"]["Verdict"])
             self.assertFalse(snapshot["result"]["runtime"]["api_called"])
+            self.assertEqual("canceled", snapshot["phase"])
+            self.assertEqual(
+                "USER_PROVIDER_TRANSMISSION_NOT_AUTHORIZED",
+                snapshot["result"]["minimal_receipt"]["reason_category"],
+            )
             self.assertNotIn(marker, json.dumps(snapshot, ensure_ascii=False))
+
+    def test_gui_consent_is_hash_bound_and_token_is_one_use(self) -> None:
+        marker = "SYNTHETIC-CONSENT-MARKER"
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+            os.environ, {"DEEPSEEK_API_KEY": "mock"}, clear=True
+        ), patch("standalone.assessor.ChatCompletionClient.complete") as provider_call:
+            manuscript = Path(directory) / "paper.md"
+            manuscript.write_text(_long_manuscript(), encoding="utf-8")
+            prepared = self._prepare_consent(manuscript, "deepseek", "deepseek-v4-pro")
+            self.assertEqual(str(manuscript.resolve()), prepared["path"])
+            self.assertEqual(64, len(prepared["artifact_sha256"]))
+            self.assertNotIn(_long_manuscript(), json.dumps(prepared, ensure_ascii=False))
+            manuscript.write_text(_long_manuscript() + marker, encoding="utf-8")
+            status, _body, _headers = self._request(
+                "/api/analyze",
+                token=self.state.token,
+                payload={
+                    "manuscript_path": str(manuscript),
+                    "provider": "deepseek",
+                    "model": "deepseek-v4-pro",
+                    "language": "en",
+                    "identity": "paper-gui-hash-change",
+                    "confirmed_complete": True,
+                    "prior_receipt_path": "",
+                    "generate_interpretation": False,
+                    "consent_token": prepared["consent_token"],
+                    "consent_confirmed": True,
+                },
+            )
+            self.assertEqual(202, status)
+            deadline = time.monotonic() + 3
+            snapshot = self.state.snapshot()
+            while snapshot["busy"] and time.monotonic() < deadline:
+                time.sleep(0.02)
+                snapshot = self.state.snapshot()
+        provider_call.assert_not_called()
+        self.assertEqual("canceled", snapshot["phase"])
+        self.assertFalse(snapshot["result"]["runtime"]["api_called"])
+        reused = self.state.consume_consent(
+            prepared["consent_token"],
+            True,
+            manuscript=str(manuscript),
+            provider="deepseek",
+            model="deepseek-v4-pro",
+        )
+        self.assertFalse(reused)
 
     def test_unknown_analysis_field_fails_closed(self) -> None:
         status, _body, _headers = self._request(
@@ -302,6 +394,7 @@ class WebGuiTests(unittest.TestCase):
         ):
             manuscript = Path(directory) / "paper.md"
             manuscript.write_text(_long_manuscript(), encoding="utf-8")
+            prepared = self._prepare_consent(manuscript, "deepseek", "deepseek-v4-pro")
             status, _body, _headers = self._request(
                 "/api/analyze",
                 token=self.state.token,
@@ -315,6 +408,8 @@ class WebGuiTests(unittest.TestCase):
                     "confirmed_complete": True,
                     "prior_receipt_path": "",
                     "generate_interpretation": True,
+                    "consent_token": prepared["consent_token"],
+                    "consent_confirmed": True,
                 },
             )
             self.assertEqual(202, status)
@@ -370,6 +465,7 @@ class WebGuiTests(unittest.TestCase):
         ), patch("standalone.web_gui.price_with_fallback", return_value=None):
             manuscript = Path(directory) / "paper.md"
             manuscript.write_text(_long_manuscript(), encoding="utf-8")
+            prepared = self._prepare_consent(manuscript, "gemini", "gemini-3.6-flash")
             status, _body, _headers = self._request(
                 "/api/analyze",
                 token=self.state.token,
@@ -383,6 +479,8 @@ class WebGuiTests(unittest.TestCase):
                     "confirmed_complete": True,
                     "prior_receipt_path": "",
                     "generate_interpretation": True,
+                    "consent_token": prepared["consent_token"],
+                    "consent_confirmed": True,
                 },
             )
             self.assertEqual(202, status)

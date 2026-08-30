@@ -26,6 +26,7 @@ from standalone.assessor import (  # noqa: E402
 from standalone.document_reader import normalize_semantic_text, read_document  # noqa: E402
 from standalone.events import EventSink  # noqa: E402
 from standalone.harness import (  # noqa: E402
+    AFFIRMATIVE_STOP_DIMENSIONS,
     COVERAGE_CONTRACT_VERSION,
     COVERAGE_DIMENSIONS,
     canonical_digest,
@@ -46,6 +47,16 @@ from standalone import providers as providers_module  # noqa: E402
 
 VALID_MODEL_STATE = {
     "material_root_causes": [],
+    "affirmative_sufficiency": [
+        {
+            "dimension": dimension,
+            "assessed": True,
+            "affirmative_sufficiency": True,
+            "unresolved_material_concern": False,
+            "sufficiency_reason_code": "AFFIRMATIVE_MANUSCRIPT_SUPPORT",
+        }
+        for dimension in AFFIRMATIVE_STOP_DIMENSIONS
+    ],
     "evidence_hold_codes": [],
     "submission_hold_codes": [],
     "protected": ["保持论点上限和可见的替代解释。"],
@@ -55,10 +66,20 @@ VALID_MODEL_STATE = {
 
 COVERAGE_STATE = {
     "coverage_contract_version": COVERAGE_CONTRACT_VERSION,
+    "whole_manuscript_basis": "SUFFICIENT",
+    "basis_reason_codes": ["SUFFICIENT_SUBSTANTIVE_WHOLE_MANUSCRIPT"],
+    "basis_explanation": "The supplied text contains sufficient substantive whole-manuscript material.",
     "manuscript_identity_confirmed": True,
     "full_span_covered": True,
     "dimensions": [
-        {"dimension": dimension, "applicability": "APPLICABLE", "assessed": True, "status": "CLEAR"}
+        {
+            "dimension": dimension,
+            "applicability": "APPLICABLE",
+            "assessed": True,
+            "status": "CLEAR",
+            "affirmative_sufficiency": True,
+            "sufficiency_reason_code": "AFFIRMATIVE_MANUSCRIPT_SUPPORT",
+        }
         for dimension in COVERAGE_DIMENSIONS
     ],
     "root_cause_candidate_dimensions": [],
@@ -385,14 +406,20 @@ class StandaloneRuntimeTests(unittest.TestCase):
                 [{"role": "user", "content": "test"}], reasoning_option="disabled"
             )
 
-    def test_unconfirmed_input_fails_closed_without_api_or_key(self) -> None:
-        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {}, clear=True):
+    def test_missing_explicit_transmission_consent_fails_closed_without_api(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+            os.environ, {"DEEPSEEK_API_KEY": "mock"}, clear=True
+        ):
             path = Path(directory) / "paper.md"
             path.write_text(long_manuscript(), encoding="utf-8")
             result = analyze_manuscript(RunOptions(manuscript_path=path))
             self.assertEqual("UNASSESSED", result.closure_card["Verdict"])
             self.assertFalse(result.api_called)
-            self.assertIsNone(result.provider)
+            self.assertEqual(
+                "USER_PROVIDER_TRANSMISSION_NOT_AUTHORIZED",
+                result.minimal_receipt["reason_category"],
+            )
+            self.assertEqual("NOT_AUTHORIZED", result.consent_receipt["status"])
 
     def test_kimi_analysis_uses_separate_coverage_and_adjudication_timeouts(self) -> None:
         completions = iter(
@@ -422,6 +449,7 @@ class StandaloneRuntimeTests(unittest.TestCase):
                     model="kimi-k2.6",
                     confirm_complete_current_manuscript=True,
                     manuscript_identity="paper-v1",
+                    provider_transmission_consent=True,
                 ),
                 event_sink=EventSink(jsonl_path=event_path),
             )
@@ -457,6 +485,7 @@ class StandaloneRuntimeTests(unittest.TestCase):
                     manuscript_path=path,
                     confirm_complete_current_manuscript=True,
                     manuscript_identity="paper-v1",
+                    provider_transmission_consent=True,
                 ),
                 event_sink=EventSink(jsonl_path=event_path),
             )
@@ -505,6 +534,7 @@ class StandaloneRuntimeTests(unittest.TestCase):
                     manuscript_path=path,
                     provider="kimi",
                     confirm_complete_current_manuscript=True,
+                    provider_transmission_consent=True,
                 )
             )
         self.assertEqual(2, mocked.call_count)
@@ -532,6 +562,7 @@ class StandaloneRuntimeTests(unittest.TestCase):
                 "current_artifact_sha256": document.artifact_sha256,
                 "current_semantic_content_sha256": document.semantic_content_sha256,
                 "material_root_causes": [],
+                "affirmative_stop_gate_passed": True,
                 "evidence_hold_codes": [],
                 "submission_hold_codes": [],
                 "protected": [],

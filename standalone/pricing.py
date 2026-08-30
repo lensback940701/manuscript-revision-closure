@@ -493,7 +493,7 @@ def calculate_task_cost(
     total_cny = 0.0
     all_usage_complete = True
     unknown_potential_charge_attempts = 0
-    priced_usage_receipts = 0
+    complete_usage_receipts = 0
     for index, usage in enumerate(usages, start=1):
         prompt_raw = usage.get("prompt_tokens")
         output_raw = usage.get("completion_tokens")
@@ -508,6 +508,8 @@ def calculate_task_cost(
         all_usage_complete = all_usage_complete and usage_complete
         if not usage_complete:
             unknown_potential_charge_attempts += 1
+        else:
+            complete_usage_receipts += 1
         prompt = prompt_raw if usage_complete else None
         output = output_raw if usage_complete else None
         hit = int(usage.get("prompt_cache_hit_tokens", usage.get("cached_tokens", 0)) or 0) if usage_complete else None
@@ -523,7 +525,6 @@ def calculate_task_cost(
         cost_usd: float | None = None
         cost_cny: float | None = None
         if quote is not None and usage_complete:
-            priced_usage_receipts += 1
             hit_rate = quote.input_cache_hit_per_million
             if hit_rate is None:
                 miss += hit
@@ -592,7 +593,7 @@ def calculate_task_cost(
         "currency": quote.currency if quote is not None else None,
         "exchange_rate": exchange_rate.as_dict() if exchange_rate is not None else None,
         "physical_request_attempt_count": len(calls),
-        "usage_receipt_count": priced_usage_receipts,
+        "usage_receipt_count": complete_usage_receipts,
         "unknown_potential_charge_attempt_count": unknown_potential_charge_attempts,
         "billing_limitations": limitations,
     }

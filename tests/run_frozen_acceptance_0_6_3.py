@@ -1,4 +1,4 @@
-"""Direct frozen-EXE acceptance for the bounded MRC 0.6.3 repair.
+"""Direct frozen-EXE acceptance implementation for the bounded MRC 0.6.4 repair.
 
 Uses only loopback mock providers and synthetic temporary manuscripts.  The
 script intentionally imports no application modules, so every assertion is
@@ -27,7 +27,7 @@ ROOT = Path(__file__).resolve().parents[1]
 EXE = ROOT / "release" / "ManuscriptRevisionClosure.exe"
 BUILD_RECEIPT = json.loads((ROOT / "release" / "BUILD_RECEIPT.json").read_text(encoding="utf-8"))
 
-COVERAGE_CONTRACT_VERSION = "mrc-whole-manuscript-coverage-1.0"
+COVERAGE_CONTRACT_VERSION = "mrc-whole-manuscript-coverage-3.0"
 COVERAGE_DIMENSIONS = (
     "contribution",
     "whole_paper_argument",
@@ -40,6 +40,14 @@ COVERAGE_DIMENSIONS = (
     "evidence_status_and_provenance",
     "revision_vs_submission_boundary",
 )
+AFFIRMATIVE_STOP_DIMENSIONS = (
+    "contribution",
+    "whole_paper_argument",
+    "theory_and_concepts",
+    "methods_and_research_design",
+    "evidence_and_analysis",
+    "section_roles_and_coherence",
+)
 
 
 def _canonical_digest(value: dict[str, Any]) -> str:
@@ -47,10 +55,19 @@ def _canonical_digest(value: dict[str, Any]) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+def assert_not_formed_value(receipt: dict[str, Any], field: str) -> None:
+    """Accept only the contract's two no-value encodings: omission or explicit null."""
+
+    assert field not in receipt or receipt[field] is None, (field, receipt.get(field))
+
+
 def coverage_state(candidates: list[str]) -> dict[str, Any]:
     candidate_set = set(candidates)
     return {
         "coverage_contract_version": COVERAGE_CONTRACT_VERSION,
+        "whole_manuscript_basis": "SUFFICIENT",
+        "basis_reason_codes": ["SUFFICIENT_SUBSTANTIVE_WHOLE_MANUSCRIPT"],
+        "basis_explanation": "The supplied text contains sufficient substantive whole-manuscript material.",
         "manuscript_identity_confirmed": True,
         "full_span_covered": True,
         "dimensions": [
@@ -61,6 +78,8 @@ def coverage_state(candidates: list[str]) -> dict[str, Any]:
                 "status": (
                     "POTENTIAL_MATERIAL_ROOT_CAUSE" if dimension in candidate_set else "CLEAR"
                 ),
+                "affirmative_sufficiency": True,
+                "sufficiency_reason_code": "AFFIRMATIVE_MANUSCRIPT_SUPPORT",
             }
             for dimension in COVERAGE_DIMENSIONS
         ],
@@ -75,16 +94,58 @@ def coverage_state(candidates: list[str]) -> dict[str, Any]:
     }
 
 
-def cause_row(dimension: str) -> dict[str, Any]:
+def insufficient_coverage_state() -> dict[str, Any]:
     return {
-        "observed": False,
-        "locatable": False,
+        "coverage_contract_version": COVERAGE_CONTRACT_VERSION,
+        "whole_manuscript_basis": "INSUFFICIENT",
+        "basis_reason_codes": ["FRAGMENT_OR_EXCERPT_ONLY"],
+        "basis_explanation": "The supplied material is substantively only a fragment or excerpt.",
+        "manuscript_identity_confirmed": True,
+        "full_span_covered": False,
+        "dimensions": [
+            {
+                "dimension": dimension,
+                "applicability": "APPLICABLE",
+                "assessed": False,
+                "status": "UNASSESSED",
+                "affirmative_sufficiency": False,
+                "sufficiency_reason_code": "UNASSESSED",
+            }
+            for dimension in COVERAGE_DIMENSIONS
+        ],
+        "root_cause_candidate_dimensions": [],
+        "evidence_hold_codes": [],
+        "submission_hold_codes": [],
+        "protected_invariants": {
+            "claim_ceiling_preserved": False,
+            "evidence_status_distinctions_preserved": False,
+            "rivals_and_negative_findings_preserved": False,
+        },
+    }
+
+
+def cause_row(
+    dimension: str,
+    *,
+    coverage_candidate: bool = True,
+    material: bool = False,
+    scope: str = "local",
+) -> dict[str, Any]:
+    return {
+        "observed": material,
+        "locatable": material,
         "dimension": dimension,
-        "style_only": True,
+        "origin": "COVERAGE_CANDIDATE" if coverage_candidate else "INDEPENDENT_ADDITION",
+        "coverage_disagreement": not coverage_candidate,
+        "disposition_reason_code": (
+            "MATERIAL_CONCERN_CONFIRMED" if material else "NOT_OBSERVED"
+        ),
+        "author_decision_required": False,
+        "style_only": False,
         "hold_only": False,
         "verification_only": False,
-        "expected_benefit_exceeds_risk": False,
-        "scope": "local",
+        "expected_benefit_exceeds_risk": material,
+        "scope": scope,
     }
 
 
@@ -94,9 +155,33 @@ def adjudication_state(
     *,
     protected: list[str] | None = None,
 ) -> dict[str, Any]:
+    unresolved = {
+        str(row["dimension"])
+        for row in rows
+        if row.get("observed") is True
+        and row.get("locatable") is True
+        and row.get("style_only") is False
+        and row.get("hold_only") is False
+        and row.get("verification_only") is False
+        and row.get("expected_benefit_exceeds_risk") is True
+    }
     return {
         "coverage_digest_sha256": _canonical_digest(coverage),
         "material_root_causes": deepcopy(rows),
+        "affirmative_sufficiency": [
+            {
+                "dimension": dimension,
+                "assessed": True,
+                "affirmative_sufficiency": dimension not in unresolved,
+                "unresolved_material_concern": dimension in unresolved,
+                "sufficiency_reason_code": (
+                    "UNRESOLVED_MATERIAL_CONCERN"
+                    if dimension in unresolved
+                    else "AFFIRMATIVE_MANUSCRIPT_SUPPORT"
+                ),
+            }
+            for dimension in AFFIRMATIVE_STOP_DIMENSIONS
+        ],
         "evidence_hold_codes": [],
         "submission_hold_codes": [],
         "protected": protected or ["保持论点上限和可见的替代解释。"],
@@ -147,11 +232,15 @@ class MockProvider:
                 length = int(self.headers.get("content-length", "0"))
                 body = json.loads(self.rfile.read(length).decode("utf-8"))
                 stage = outer._stage(body)
+                outer._validate_request(stage, body)
                 outer.requests.append(body)
                 outer.stages.append(stage)
                 status, state = outer._response(stage)
                 if status != 200:
-                    payload = b'{"error":{"message":"bounded mock failure"}}'
+                    payload = (
+                        b'{"error":{"status":"UNAVAILABLE","code":"mock_overload",'
+                        b'"message":"bounded mock failure"}}'
+                    )
                     self.send_response(status)
                     self.send_header("Retry-After", "7")
                     self.send_header("Content-Type", "application/json")
@@ -201,10 +290,33 @@ class MockProvider:
             return "presentation_repair"
         raise AssertionError("frozen EXE sent an unrecognized provider stage")
 
+    @staticmethod
+    def _validate_request(stage: str, body: dict[str, Any]) -> None:
+        if stage != "adjudication":
+            return
+        messages = body["messages"]
+        system = messages[0]["content"]
+        assert "required lower bound" in system
+        assert "you may add a dimension omitted by coverage" in system
+        response_format = body["response_format"]
+        if response_format["type"] == "json_schema":
+            schema = response_format["json_schema"]["schema"]
+            causes = schema["properties"]["material_root_causes"]
+            assert causes["maxItems"] == len(COVERAGE_DIMENSIONS)
+            assert causes["items"]["properties"]["dimension"]["enum"] == list(
+                COVERAGE_DIMENSIONS
+            )
+            assert causes["items"]["properties"]["dimension"]["enum"]
+        else:
+            assert response_format == {"type": "json_object"}
+            assert "Canonical JSON schema:" in system
+
     def _states(self) -> tuple[dict[str, Any], dict[str, Any]]:
-        if self.scenario in {"gemini_multi", "gemini_missing", "gemini_duplicate"}:
+        if self.scenario.startswith("basis_insufficient"):
+            coverage = insufficient_coverage_state()
+        elif self.scenario in {"gemini_multi", "gemini_missing", "gemini_duplicate"}:
             coverage = coverage_state(["contribution", "methods_and_research_design"])
-        elif self.scenario == "gemini_extra":
+        elif self.scenario in {"gemini_extra", "gemini_ungrounded_addition"}:
             coverage = coverage_state(["contribution"])
         else:
             coverage = coverage_state([])
@@ -212,12 +324,43 @@ class MockProvider:
         if self.scenario == "gemini_missing":
             rows = [cause_row("contribution")]
         elif self.scenario == "gemini_extra":
-            rows = [cause_row("contribution"), cause_row("theory_and_concepts")]
+            rows = [
+                cause_row("contribution"),
+                cause_row(
+                    "theory_and_concepts",
+                    coverage_candidate=False,
+                    material=True,
+                    scope="central",
+                ),
+            ]
+        elif self.scenario == "gemini_ungrounded_addition":
+            rows = [
+                cause_row("contribution"),
+                cause_row("theory_and_concepts", coverage_candidate=False),
+            ]
         elif self.scenario == "gemini_duplicate":
             rows = [
                 cause_row("contribution"),
                 cause_row("contribution"),
                 cause_row("methods_and_research_design"),
+            ]
+        elif self.scenario == "semantic_reopen_addition":
+            rows = [
+                cause_row(
+                    "contribution",
+                    coverage_candidate=False,
+                    material=True,
+                    scope="central",
+                )
+            ]
+        elif self.scenario == "semantic_one_round_addition":
+            rows = [
+                cause_row(
+                    "methods_and_research_design",
+                    coverage_candidate=False,
+                    material=True,
+                    scope="local",
+                )
             ]
         else:
             rows = [cause_row(item) for item in coverage["root_cause_candidate_dimensions"]]
@@ -308,20 +451,21 @@ def validate_common_runtime(result: dict[str, Any], events: list[dict[str, Any]]
     serialized = json.dumps(result, ensure_ascii=False)
     assert "Authorization" not in serialized
     assert '"api_key"' not in serialized
-    assert "bounded mock failure" not in serialized
+    assert '"raw_provider_response"' not in serialized
 
 
 def run_cli_case(
     scenario: str,
     provider: str,
     model: str,
+    manuscript_text: str | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
-    with MockProvider(scenario) as mock, tempfile.TemporaryDirectory(prefix="mrc063-frozen-cli-") as directory:
+    with MockProvider(scenario) as mock, tempfile.TemporaryDirectory(prefix="mrc064-frozen-cli-") as directory:
         temp = Path(directory)
         manuscript = temp / "synthetic.md"
         output = temp / "result.json"
         event_log = temp / "events.jsonl"
-        manuscript.write_text(synthetic_manuscript(), encoding="utf-8")
+        manuscript.write_text(manuscript_text or synthetic_manuscript(), encoding="utf-8")
         completed = subprocess.run(
             [
                 str(EXE),
@@ -337,6 +481,7 @@ def run_cli_case(
                 "--identity",
                 f"synthetic-{scenario}",
                 "--confirm-complete",
+                "--consent-to-provider-transmission",
                 "--output",
                 str(output),
                 "--event-log",
@@ -357,6 +502,48 @@ def run_cli_case(
     return result, events, requests
 
 
+def run_intake_only_case(name: str, manuscript_text: str) -> dict[str, Any]:
+    with tempfile.TemporaryDirectory(prefix="mrc064-frozen-intake-") as directory:
+        temp = Path(directory)
+        manuscript = temp / "synthetic.md"
+        output = temp / "result.json"
+        manuscript.write_text(manuscript_text, encoding="utf-8")
+        env = os.environ.copy()
+        for key in (
+            "DEEPSEEK_API_KEY",
+            "MOONSHOT_API_KEY",
+            "KIMI_API_KEY",
+            "GEMINI_API_KEY",
+        ):
+            env.pop(key, None)
+        env["GEMINI_API_KEY"] = "mock-consent-denied-no-network"
+        env["PYTHONDONTWRITEBYTECODE"] = "1"
+        completed = subprocess.run(
+            [
+                str(EXE),
+                str(manuscript),
+                "--provider",
+                "gemini",
+                "--model",
+                "gemini-3.7-flash",
+                "--identity",
+                f"synthetic-intake-{name}",
+                "--output",
+                str(output),
+            ],
+            cwd=temp,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        assert completed.returncode == 0, (name, completed.stdout, completed.stderr)
+        result = json.loads(output.read_text(encoding="utf-8"))
+        assert result["runtime"]["api_called"] is False
+        return result
+
+
 def _request_json(url: str, token: str, *, payload: dict[str, Any] | None = None) -> dict[str, Any]:
     data = None if payload is None else json.dumps(payload).encode("utf-8")
     request = urllib.request.Request(
@@ -375,8 +562,9 @@ def run_gui_case(
     model: str,
     *,
     interpretation: bool,
+    consent_confirmed: bool = True,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    with MockProvider(scenario) as mock, tempfile.TemporaryDirectory(prefix="mrc063-frozen-gui-") as directory:
+    with MockProvider(scenario) as mock, tempfile.TemporaryDirectory(prefix="mrc064-frozen-gui-") as directory:
         temp = Path(directory)
         manuscript = temp / "synthetic.md"
         manuscript.write_text(synthetic_manuscript(), encoding="utf-8")
@@ -397,6 +585,15 @@ def run_gui_case(
             parsed = urllib.parse.urlsplit(gui_url)
             token = urllib.parse.parse_qs(parsed.query)["token"][0]
             base = f"{parsed.scheme}://{parsed.netloc}"
+            prepared = _request_json(
+                base + "/api/prepare-consent",
+                token,
+                payload={
+                    "manuscript_path": str(manuscript),
+                    "provider": provider,
+                    "model": model,
+                },
+            )
             accepted = _request_json(
                 base + "/api/analyze",
                 token,
@@ -410,6 +607,8 @@ def run_gui_case(
                     "confirmed_complete": True,
                     "prior_receipt_path": "",
                     "generate_interpretation": interpretation,
+                    "consent_token": prepared["consent_token"],
+                    "consent_confirmed": consent_confirmed,
                 },
             )
             assert accepted["accepted"] is True
@@ -435,7 +634,26 @@ def run_gui_case(
 
 def main() -> None:
     assert EXE.is_file()
-    assert BUILD_RECEIPT["standalone_version"] == "0.6.3"
+    assert BUILD_RECEIPT["standalone_version"] == "0.6.4"
+    assert BUILD_RECEIPT["intake_contract_version"] == "mrc-local-technical-preflight-1.0"
+    assert BUILD_RECEIPT["title_evidence_contract_version"] == "mrc-format-advisory-1.0"
+    assert len(BUILD_RECEIPT["title_evidence_contract_sha256"]) == 64
+    assert BUILD_RECEIPT["manuscript_basis_contract_version"] == "mrc-semantic-manuscript-basis-1.0"
+    assert len(BUILD_RECEIPT["manuscript_basis_contract_sha256"]) == 64
+    assert (
+        BUILD_RECEIPT["provider_transmission_consent_contract_version"]
+        == "mrc-provider-transmission-consent-1.0"
+    )
+    assert len(BUILD_RECEIPT["provider_transmission_consent_contract_sha256"]) == 64
+    assert BUILD_RECEIPT["coverage_contract_version"] == "mrc-whole-manuscript-coverage-3.0"
+    assert BUILD_RECEIPT["adjudication_contract_version"] == "mrc-root-cause-adjudication-2.0"
+    assert BUILD_RECEIPT["contradiction_gate_version"] == "mrc-cross-stage-contradiction-gate-2.0"
+    assert BUILD_RECEIPT["candidate_binding_contract_version"] == (
+        "mrc-candidate-lower-bound-independent-additions-1.0"
+    )
+    assert len(BUILD_RECEIPT["candidate_binding_contract_sha256"]) == 64
+    assert BUILD_RECEIPT["affirmative_stop_contract_version"] == "mrc-affirmative-stop-gate-1.0"
+    assert len(BUILD_RECEIPT["affirmative_stop_contract_sha256"]) == 64
     summary: dict[str, Any] = {"frozen_exe_sha256": hashlib.sha256(EXE.read_bytes()).hexdigest(), "cases": {}}
 
     kimi, kimi_requests = run_gui_case(
@@ -470,7 +688,15 @@ def main() -> None:
     assert physical["http_status"] == 503
     assert physical["provider_outcome"] == "UNKNOWN"
     assert physical["retry_after"] == "7"
-    assert "稿件完整性：PASS" in transient["closure_card"]["Reason"]
+    assert physical["provider_error_status"] == "UNAVAILABLE"
+    assert physical["provider_error_code"] == "mock_overload"
+    assert physical["provider_error_detail"] == "bounded mock failure"
+    assert transient["minimal_receipt"]["reason_category"] == "TECHNICAL_EXECUTION_HOLD"
+    assert transient["minimal_receipt"]["failed_stage"] == "coverage_provider"
+    assert transient["minimal_receipt"]["technical_hold_contract_version"] == "mrc-technical-hold-receipt-1.0"
+    assert transient["closure_card"]["Failed stage"] == "coverage_provider"
+    assert transient_runtime["machine_receipt"]["reason_category"] == "TECHNICAL_EXECUTION_HOLD"
+    assert "本地技术预检已通过" in transient["closure_card"]["Reason"]
     summary["cases"]["gemini_503"] = {"requests": 1, "machine_status": "HOLD"}
 
     multi, _events, multi_requests = run_cli_case(
@@ -480,16 +706,16 @@ def main() -> None:
     assert multi["runtime"]["presentation_status"] == "PASS"
     dynamic = multi_requests[1]["response_format"]["json_schema"]["schema"]
     cause_schema = dynamic["properties"]["material_root_causes"]
-    assert cause_schema["minItems"] == cause_schema["maxItems"] == 2
-    assert cause_schema["items"]["properties"]["dimension"]["enum"] == [
-        "contribution",
-        "methods_and_research_design",
-    ]
+    assert cause_schema["minItems"] == 2
+    assert cause_schema["maxItems"] == len(COVERAGE_DIMENSIONS)
+    assert cause_schema["items"]["properties"]["dimension"]["enum"] == list(
+        COVERAGE_DIMENSIONS
+    )
     summary["cases"]["gemini_multi"] = {"requests": 2, "dynamic_candidates": 2}
 
     for scenario, field, expected in (
         ("gemini_missing", "missing_candidates", ["methods_and_research_design"]),
-        ("gemini_extra", "extra_candidates", ["theory_and_concepts"]),
+        ("gemini_ungrounded_addition", "ungrounded_additions", ["theory_and_concepts"]),
         ("gemini_duplicate", "duplicate_candidates", ["contribution"]),
     ):
         result, _events, requests = run_cli_case(scenario, "gemini", "gemini-3.6-flash")
@@ -504,12 +730,45 @@ def main() -> None:
             "required_candidates",
             "observed_candidates",
             "missing_candidates",
-            "extra_candidates",
+            "independent_additions",
             "duplicate_candidates",
+            "invalid_origin_or_disagreement",
+            "invalid_disposition",
+            "ungrounded_additions",
         ):
             assert required_field in diagnostic
         assert diagnostic[field] == expected
         summary["cases"][scenario] = {"requests": 2, field: expected}
+
+    recovered, _events, recovered_requests = run_cli_case(
+        "gemini_extra", "gemini", "gemini-3.6-flash"
+    )
+    assert len(recovered_requests) == 2
+    assert recovered["closure_card"]["Verdict"] == "REOPEN_SUBSTANTIVE_REVISION"
+    recovered_binding = recovered["runtime"]["machine_receipt"]["candidate_binding"]
+    assert recovered_binding["required_candidates"] == ["contribution"]
+    assert recovered_binding["independent_additions"] == ["theory_and_concepts"]
+    summary["cases"]["coverage_miss_recovered"] = {
+        "requests": 2,
+        "verdict": "REOPEN_SUBSTANTIVE_REVISION",
+    }
+
+    for scenario, expected_verdict in (
+        ("semantic_one_round_addition", "ONE_BOUNDED_ROUND"),
+        ("semantic_reopen_addition", "REOPEN_SUBSTANTIVE_REVISION"),
+        ("semantic_affirmative_stop", "STOP_REVISING"),
+    ):
+        semantic, _events, semantic_requests = run_cli_case(
+            scenario, "kimi", "kimi-k2.6"
+        )
+        assert len(semantic_requests) == 2
+        assert semantic["closure_card"]["Verdict"] == expected_verdict
+        gate = semantic["runtime"]["machine_receipt"]["affirmative_stop_gate"]
+        assert gate["stop_eligible"] is (expected_verdict == "STOP_REVISING")
+        summary["cases"][scenario] = {
+            "requests": 2,
+            "verdict": expected_verdict,
+        }
 
     deepseek, _events, deepseek_requests = run_cli_case(
         "deepseek_valid", "deepseek", "deepseek-v4-pro"
@@ -558,9 +817,162 @@ def main() -> None:
         "phase": presentation_gui["phase"],
     }
 
+    canceled_gui, canceled_gui_requests = run_gui_case(
+        "consent_canceled_gui",
+        "gemini",
+        "gemini-3.7-flash",
+        interpretation=False,
+        consent_confirmed=False,
+    )
+    assert canceled_gui_requests == []
+    assert canceled_gui["phase"] == "canceled"
+    assert canceled_gui["result"]["runtime"]["api_called"] is False
+    assert (
+        canceled_gui["result"]["minimal_receipt"]["reason_category"]
+        == "USER_PROVIDER_TRANSMISSION_NOT_AUTHORIZED"
+    )
+    summary["cases"]["consent_canceled_gui"] = {"requests": 0, "phase": "canceled"}
+
+    basis_gui, basis_requests = run_gui_case(
+        "basis_insufficient_gui",
+        "gemini",
+        "gemini-3.7-flash",
+        interpretation=False,
+    )
+    assert basis_gui["phase"] == "completed_with_machine_hold"
+    basis_insufficient = basis_gui["result"]
+    basis_runtime = basis_insufficient["runtime"]
+    assert len(basis_requests) == 1
+    assert basis_runtime["physical_request_attempt_count"] == 1
+    assert basis_runtime["machine_status"] == "NOT_FORMED"
+    assert basis_runtime["presentation_status"] == "NOT_STARTED"
+    basis_machine_receipt = basis_runtime["machine_receipt"]
+    assert basis_machine_receipt["status"] == "NOT_FORMED"
+    assert_not_formed_value(basis_machine_receipt, "authoritative_machine_verdict")
+    assert_not_formed_value(basis_machine_receipt, "deterministic_verdict")
+    assert_not_formed_value(basis_machine_receipt, "authoritative_presentation_source")
+    assert basis_machine_receipt["whole_manuscript_basis"] == "INSUFFICIENT"
+    assert (
+        basis_machine_receipt["reason_category"]
+        == "INSUFFICIENT_WHOLE_MANUSCRIPT_BASIS"
+    )
+    assert basis_insufficient["minimal_receipt"]["whole_manuscript_basis"] == "INSUFFICIENT"
+    assert (
+        basis_insufficient["minimal_receipt"]["reason_category"]
+        == "INSUFFICIENT_WHOLE_MANUSCRIPT_BASIS"
+    )
+    assert [MockProvider._stage(item) for item in basis_requests] == ["coverage"]
+    assert len(basis_runtime["provider_receipts"]) == 1
+    assert basis_runtime["provider_receipts"][0]["stage"] == "coverage"
+    basis_physical = basis_runtime["physical_request_receipts"]
+    assert len(basis_physical) == 1
+    assert basis_physical[0]["stage"] == "coverage"
+    assert basis_physical[0]["usage_status"] == "COMPLETE"
+    assert basis_insufficient["task_cost"]["physical_request_attempt_count"] == 1
+    assert basis_insufficient["task_cost"]["usage_receipt_count"] == 1
+    assert basis_insufficient["task_cost"]["unknown_potential_charge_attempt_count"] == 0
+    summary["cases"]["basis_insufficient"] = {
+        "coverage_requests": 1,
+        "adjudication_requests": 0,
+        "machine_status": "NOT_FORMED",
+    }
+
+    format_variants = {
+        "h1_atx": "# Synthetic title\n\n## Abstract\n\nBody evidence.\n\n## Conclusion\nBounded.\n",
+        "setext": "Synthetic title\n===============\n\nAbstract\n--------\nBody evidence.\n\nConclusion\n----------\nBounded.\n",
+        "roman": "I. Introduction\n\nBody evidence.\n\nVI. Conclusion\nBounded.\n",
+        "s_numbered": "S1 Introduction\n\nBody evidence.\n\nS6 Conclusion\nBounded.\n",
+        "chinese": "第一章 引言\n\n实质材料。\n\n第六章 结论\n有限结论。\n",
+        "front_matter": "---\nauthor: Synthetic\n---\n\nAbstract\n\nBody evidence.\n",
+        "titleless": "Abstract\n\nBody evidence without a conventional title.\n",
+    }
+    for label, text in format_variants.items():
+        variant, _events, requests = run_cli_case(
+            f"basis_insufficient_format_{label}",
+            "gemini",
+            "gemini-3.7-flash",
+            manuscript_text=text,
+        )
+        assert len(requests) == 1, label
+        assert [MockProvider._stage(item) for item in requests] == ["coverage"], label
+        assert variant["runtime"]["harness"]["intake"]["local_preflight_passed"] is True
+        assert variant["minimal_receipt"]["whole_manuscript_basis"] == "INSUFFICIENT"
+    summary["cases"]["format_invariant_coverage_routing"] = {
+        "variants": len(format_variants),
+        "coverage_requests_each": 1,
+    }
+
+    s_series = (
+        "# Synthetic S Manuscript\n\n## Abstract\n\n"
+        + ("Bounded structure.\n" * 100)
+        + "\n## S1. Introduction\nText.\n## S2. Methods\nText.\n"
+        "### Unnumbered child\nText.\n## S3. Findings\nText.\n"
+        "## S4. Discussion\nText.\n## S5. Limits\nText.\n"
+        "## S6. Conclusion\nText.\n## References\nRef.\n"
+    )
+    s_intake = run_intake_only_case("s-series", s_series)
+    s_receipt = s_intake["runtime"]["harness"]["intake"]
+    assert s_receipt["complete_structure"] is True
+    assert s_receipt["advisory_codes"] == []
+    summary["cases"]["intake_s_series"] = {"api_calls": 0, "complete": True}
+
+    unnumbered = (
+        "# Synthetic Unnumbered Manuscript\n\n## Abstract\n\n"
+        + ("Bounded structure.\n" * 100)
+        + "\n## Introduction\nText.\n## Methods\nText.\n"
+        "## Conclusion\nText.\n## References\nRef.\n"
+    )
+    unnumbered_intake = run_intake_only_case("unnumbered", unnumbered)
+    unnumbered_receipt = unnumbered_intake["runtime"]["harness"]["intake"]
+    assert unnumbered_receipt["complete_structure"] is True
+    assert unnumbered_receipt["advisory_codes"] == ["HEADING_NUMBERING_STYLE_REVIEW"]
+    assert unnumbered_receipt["advisories"][0]["blocking"] is False
+    summary["cases"]["intake_unnumbered_advisory"] = {"api_calls": 0, "complete": True}
+
+    missing_conclusion = unnumbered.replace("## Conclusion\nText.\n", "")
+    missing_intake = run_intake_only_case("missing-conclusion", missing_conclusion)
+    assert missing_intake["runtime"]["harness"]["intake"]["local_preflight_passed"] is True
+    assert (
+        missing_intake["minimal_receipt"]["reason_category"]
+        == "USER_PROVIDER_TRANSMISSION_NOT_AUTHORIZED"
+    )
+    summary["cases"]["intake_missing_conclusion"] = {"api_calls": 0, "preflight": True}
+
+    missing_title = unnumbered.replace("# Synthetic Unnumbered Manuscript\n\n", "", 1)
+    missing_title_intake = run_intake_only_case("missing-title", missing_title)
+    missing_title_receipt = missing_title_intake["runtime"]["harness"]["intake"]
+    assert missing_title_receipt["title_present"] is False
+    assert missing_title_receipt["local_preflight_passed"] is True
+    assert (
+        missing_title_intake["minimal_receipt"]["reason_category"]
+        == "USER_PROVIDER_TRANSMISSION_NOT_AUTHORIZED"
+    )
+    summary["cases"]["intake_missing_title"] = {"api_calls": 0, "preflight": True}
+
+    yaml_missing_title = (
+        "\ufeff---\nauthor: Synthetic Author\ndate: 2026-08-28\nkeywords: synthetic\n---\n\n"
+        + missing_title
+    )
+    yaml_missing_title_intake = run_intake_only_case(
+        "yaml-front-matter-missing-title", yaml_missing_title
+    )
+    yaml_missing_title_receipt = yaml_missing_title_intake["runtime"]["harness"]["intake"]
+    assert yaml_missing_title_receipt["contract_version"] == "mrc-local-technical-preflight-1.0"
+    assert yaml_missing_title_receipt["title_present"] is False
+    assert yaml_missing_title_receipt["local_preflight_passed"] is True
+    assert yaml_missing_title_intake["runtime"]["api_called"] is False
+    assert (
+        yaml_missing_title_intake["minimal_receipt"]["reason_category"]
+        == "USER_PROVIDER_TRANSMISSION_NOT_AUTHORIZED"
+    )
+    summary["cases"]["intake_yaml_front_matter_missing_title"] = {
+        "api_calls": 0,
+        "preflight": True,
+    }
+
     summary.update(
         {
-            "status": "PASS_FROZEN_MRC_0_6_3_MOCK_ACCEPTANCE",
+            "status": "PASS_FROZEN_MRC_0_6_4_MOCK_ACCEPTANCE",
             "case_count": len(summary["cases"]),
             "real_api_calls": 0,
             "real_manuscripts_read": 0,

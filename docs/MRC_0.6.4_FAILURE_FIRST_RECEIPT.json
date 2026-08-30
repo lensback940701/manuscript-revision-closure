@@ -1,0 +1,438 @@
+{
+  "contract": "MRC 0.6.4 intake / technical HOLD / diagnostics bounded repair",
+  "captured_at_local": "2026-08-28T15:19:24.6770008+08:00",
+  "baseline": {
+    "commit": "ed559d73193a59e475807fd9016a6b034ed906f0",
+    "tree": "387d9274019c6096112af74c995772dd2d78cf6b",
+    "standalone_version": "0.6.3",
+    "skill_version": "0.2.1",
+    "exe_bytes": 10628488,
+    "exe_sha256": "EFC62E465C0B3932F3C76C7D9540EAA751F6B2299CBE590C528FF45B81B712B5"
+  },
+  "command": "PYTHONDONTWRITEBYTECODE=1 python -B -m unittest discover -s tests -p test_mrc_0_6_4_intake_technical_hold_diagnostics.py -v",
+  "exit_code": 1,
+  "tests_run": 5,
+  "expected_failures": [
+    {
+      "test": "test_01_technical_hold_minimal_receipt_matches_machine_surface",
+      "observed": "minimal_receipt reason_category remained INSUFFICIENT_WHOLE_MANUSCRIPT_BASIS"
+    },
+    {
+      "test": "test_02_provider_safe_error_detail_is_retained",
+      "observed": "provider_error_status field absent; parsed error detail discarded"
+    },
+    {
+      "test": "test_03_s1_s6_atx_structure_is_complete",
+      "observed": "S1-S6 ATX manuscript complete_structure=false"
+    },
+    {
+      "test": "test_04_unnumbered_atx_is_pass_with_nonblocking_advisory",
+      "observed": "IntakeReceipt had no advisory_codes contract"
+    },
+    {
+      "test": "test_05_readme_does_not_claim_bounded_retry_for_overload",
+      "observed": "README still claimed bounded retries for 429/502/503/504"
+    }
+  ],
+  "repaired_run": {
+    "captured_at_local": "2026-08-28T15:36:45.7164884+08:00",
+    "exit_code": 0,
+    "tests_run": 17,
+    "result": "PASS"
+  },
+  "title_presence_iteration_failure_first": {
+    "captured_at_local": "2026-08-28T15:59:14.1035558+08:00",
+    "authorization": "new narrow iteration for the sole independent HOLD",
+    "pre_repair_exe_bytes": 10635527,
+    "pre_repair_exe_sha256": "39D4DB5442520419BB4A9B0257D42F6DE348CCBE29759A0591D1FAC48B5CE117",
+    "pre_repair_validation_receipt_sha256": "50188C90DE86E647C888246489B212BDD1A25E3BE65772A34BA4C4720EE34FFA",
+    "command": "PYTHONDONTWRITEBYTECODE=1 python -B -m unittest discover -s tests -p test_mrc_0_6_4_intake_technical_hold_diagnostics.py -v",
+    "exit_code": 1,
+    "tests_run": 21,
+    "failing_test_methods": 3,
+    "failing_semantic_heading_subtests": 16,
+    "expected_failures": [
+      "English ## Abstract incorrectly consumed as title",
+      "Chinese ## 摘要 incorrectly consumed as title",
+      "Abstract/Keywords/Introduction/Methods/Results/Discussion/Conclusion/References semantic headings incorrectly eligible as title fallback"
+    ],
+    "positive_control": "legal H1 and plain titles remained PASS",
+    "real_api_calls": 0,
+    "builder_invocations": 0
+  },
+  "title_presence_iteration_repaired_run": {
+    "command": "PYTHONDONTWRITEBYTECODE=1 python -B -m unittest discover -s tests -p test_mrc_0_6_4_intake_technical_hold_diagnostics.py -v",
+    "exit_code": 0,
+    "tests_run": 21,
+    "intake_contract_version": "mrc-manuscript-intake-2.1",
+    "result": "PASS"
+  },
+  "yaml_front_matter_title_iteration_failure_first": {
+    "captured_at_local": "2026-08-28T16:38:32.2090406+08:00",
+    "authorization": "new narrow iteration for the sole YAML front-matter independent HOLD",
+    "pre_repair_exe_bytes": 10636408,
+    "pre_repair_exe_sha256": "B30CBCE487C5891325C4131135866DC6EB2A610D5C28C9285D75C7F81E4CE0CA",
+    "pre_repair_build_receipt_sha256": "44F0F61F9DF0E85B6EF16DB6D3CEECE4B93C2B355C4285B2FA6A579F54A5A826",
+    "pre_repair_validation_receipt_sha256": "BF0EA599ABD6EC43CCF96E890AF421ED535FE4FD2A1E2FAA5E165B24C0F9A86B",
+    "command": "PYTHONDONTWRITEBYTECODE=1 python -B -m unittest discover -s tests -p test_mrc_0_6_4_intake_technical_hold_diagnostics.py -v",
+    "exit_code": 1,
+    "tests_run": 29,
+    "failing_test_methods": 5,
+    "failing_assertions": 9,
+    "expected_failures": [
+      "BOM/leading-blank YAML metadata before English Abstract incorrectly counted as title evidence",
+      "Chinese YAML metadata before Chinese 摘要 incorrectly counted as title evidence",
+      "empty, whitespace-only, null, tilde, and contentless block-scalar top-level title values incorrectly counted as title evidence",
+      "nested title incorrectly counted as top-level manuscript title evidence",
+      "unclosed front matter did not fail closed and could cross the provider boundary"
+    ],
+    "positive_controls": [
+      "non-empty top-level YAML title remained complete",
+      "closed YAML without title followed by legal H1 remained complete",
+      "closed YAML without title followed by legal plain title remained complete"
+    ],
+    "real_api_calls": 0,
+    "loopback_or_mock_only": true,
+    "builder_invocations": 0
+  },
+  "yaml_front_matter_title_iteration_repaired_run": {
+    "command": "PYTHONDONTWRITEBYTECODE=1 python -B -m unittest discover -s tests -p test_mrc_0_6_4_intake_technical_hold_diagnostics.py -v",
+    "exit_code": 0,
+    "tests_run": 29,
+    "intake_contract_version": "mrc-manuscript-intake-2.2",
+    "title_evidence_contract_version": "mrc-title-evidence-1.0",
+    "result": "PASS"
+  },
+  "thin_preflight_consent_semantic_basis_migration_failure_first": {
+    "captured_at_local": "2026-08-28T17:58:25.8879687+08:00",
+    "authorization": "architecture convergence replacing format-sensitive hard gates with thin local preflight, explicit one-run consent, and a semantic basis decision inside the first coverage request",
+    "pre_migration_hold": "HOLD_MRC_0_6_4_TITLE_EVIDENCE_FALSE_PASS_ON_ROMAN_NUMBERED_INTRODUCTION",
+    "pre_migration_exe_bytes": 10638071,
+    "pre_migration_exe_sha256": "D000C649B0A78FDD69BB3B5DCE0B3B0453E1916FFED3D3253C7813339557EB46",
+    "pre_migration_build_receipt_sha256": "DDDBB45098F404C7D2F77FE83B62F688ADD4042EE2D986AD713D0E9DD14E97B5",
+    "pre_migration_validation_receipt_sha256": "CE065B47180DBD15FD18DF75D66F591EE82B604CA26736F611007D8B82A04593",
+    "test": "test_31_equivalent_format_variants_must_have_equal_local_routing_eligibility",
+    "observed_before_repair": "formatted equivalent was locally provider-eligible while its titleless equivalent was not: True != False",
+    "equivalent_format_route_probe": {
+      "formatted_provider_calls": 1,
+      "titleless_provider_calls": 0,
+      "real_api_calls": 0,
+      "loopback_or_mock_only": true
+    },
+    "expected_architecture": "all readable non-empty within-limit variants have identical coverage eligibility; user consent controls transmission; semantic insufficiency is decided in the same first coverage response",
+    "builder_invocations": 0
+  },
+  "thin_preflight_consent_semantic_basis_source_repaired_run": {
+    "command": "PYTHONDONTWRITEBYTECODE=1 python -B -m unittest tests.test_mrc_0_6_4_intake_technical_hold_diagnostics",
+    "exit_code": 0,
+    "tests_run": 39,
+    "local_preflight_contract_version": "mrc-local-technical-preflight-1.0",
+    "format_advisory_contract_version": "mrc-format-advisory-1.0",
+    "provider_transmission_consent_contract_version": "mrc-provider-transmission-consent-1.0",
+    "coverage_contract_version": "mrc-whole-manuscript-coverage-2.0",
+    "manuscript_basis_contract_version": "mrc-semantic-manuscript-basis-1.0",
+    "format_metamorphic_variants": 15,
+    "cancellation_precedes_api_key_configuration_read": true,
+    "confirmed_missing_configuration_is_structured_technical_hold": true,
+    "result": "PASS_SOURCE_CANDIDATE_PENDING_INDEPENDENT_AND_FROZEN_GATES"
+  },
+  "independent_prebuild_usage_accounting_hold": {
+    "captured_at_local": "2026-08-28T18:08:20.9231646+08:00",
+    "status": "INDEPENDENT_HOLD",
+    "unique_reason": "USAGE_RECEIPT_COUNT_DEPENDED_ON_PRICE_AVAILABILITY",
+    "observed": {
+      "physical_request_attempt_count": 1,
+      "runtime_usage_receipt_count": 1,
+      "physical_usage_status": "COMPLETE",
+      "task_cost_status": "price_unavailable",
+      "task_cost_usage_receipt_count": 0,
+      "call_usage_complete": true,
+      "call_billing_status": "KNOWN_USAGE"
+    },
+    "independent_request_count": 10,
+    "real_api_calls": 0,
+    "builder_invocations": 0,
+    "repository_edits_by_independent_acceptor": 0
+  },
+  "usage_accounting_narrow_repair_failure_first": {
+    "command": "PYTHONDONTWRITEBYTECODE=1 python -B -m unittest tests.test_pricing.PricingTests.test_complete_usage_receipt_count_is_independent_of_price_availability",
+    "pre_repair_exit_code": 1,
+    "pre_repair_assertion": "expected usage_receipt_count=1, observed 0",
+    "repair": "count complete provider usage receipts independently from price-quote availability",
+    "post_repair_exit_code": 0,
+    "pricing_tests_run": 9,
+    "full_source_tests_run": 340,
+    "result": "PASS_SOURCE_CANDIDATE_PENDING_REPEAT_INDEPENDENT_GATE"
+  },
+  "acceptance_harness_false_hold_repair": {
+    "authorized_at_local": "2026-08-28T19:50:24.4380065+08:00",
+    "historical_hold_status": "HOLD_MRC_0_6_4_FROZEN_BASIS_INSUFFICIENT_ACCEPTANCE_KEYERROR",
+    "historical_hold_validation_receipt_sha256": "0F7EF48EC5B28237BD7AA900CDD0310ECA270F6C01B3771EED3AF7C2E1EFBF93",
+    "frozen_identity": {
+      "exe_bytes": 10652388,
+      "exe_sha256": "2319598885F72F508F832E563BFF5333FACF592E25438EDB659F206A99E497E1",
+      "build_receipt_sha256": "224DB68B81890ADBDB3F0F3FFD3D22F7BD6DBB324962EC1EB3A88D7992BDDA8B"
+    },
+    "failure_first": [
+      {
+        "location": "tests/run_frozen_acceptance_0_6_3.py:695-696",
+        "observed": "KeyError while directly indexing a not-formed optional machine-verdict field",
+        "classification": "acceptance harness false negative; frozen product remained contract-conformant"
+      },
+      {
+        "observed": "the frozen NOT_FORMED receipt used omission for the machine verdict and explicit null for the presentation source",
+        "classification": "both are strict no-value encodings; a formed value remains forbidden"
+      },
+      {
+        "observed": "task_cost was indexed on the CLI core JSON even though it is attached on the frozen GUI public surface",
+        "classification": "acceptance surface mismatch; core usage receipts were present and accurate"
+      }
+    ],
+    "bounded_harness_repair": {
+      "runtime_product_files_changed": 0,
+      "exe_rebuilt": false,
+      "builder_invocations": 0,
+      "not_formed_helper": "accept only field omission or explicit null; reject every formed value",
+      "sufficient_stop_required_fields_relaxed": false,
+      "basis_cost_checked_on_gui_surface": true
+    },
+    "verification": {
+      "harness_ast": "PASS",
+      "not_formed_helper_targeted": "PASS",
+      "targeted_source_tests": 48,
+      "full_source_tests": 340,
+      "frozen_acceptance_status": "PASS_FROZEN_MRC_0_6_4_MOCK_ACCEPTANCE",
+      "frozen_acceptance_cases": 18,
+      "final_independent_status": "PASS",
+      "final_independent_loopback_requests": 27,
+      "final_independent_no_consent_requests": 0
+    }
+  },
+  "zero_candidate_moonshot_schema_failure_first": {
+    "captured_at_local": "2026-08-28T20:32:15.0709394+08:00",
+    "historical_live_signature_only": {
+      "provider": "kimi",
+      "model": "kimi-k2.6",
+      "coverage_http_status": 200,
+      "coverage_elapsed_seconds": 208.2,
+      "coverage_usage_status": "COMPLETE",
+      "whole_manuscript_basis": "SUFFICIENT",
+      "coverage_dimensions_assessed": 10,
+      "coverage_dimensions_required": 10,
+      "root_cause_candidate_dimensions": [],
+      "coverage_digest_sha256": "7a3d99ce3df0fe73be2cefafcb7e65ef490c240e4c40a93425a25c167a044ff4",
+      "adjudication_http_status": 400,
+      "provider_error_signature": "properties.material_root_causes.items.properties.dimension.enum: enum array cannot be empty",
+      "coverage_known_cost_cny": 0.335201,
+      "adjudication_usage_status": "UNKNOWN",
+      "live_request_replayed": false
+    },
+    "synthetic_command": "PYTHONDONTWRITEBYTECODE=1 python -B -m unittest tests.test_mrc_0_6_4_intake_technical_hold_diagnostics.Mrc064FailureFirstTests.test_40_failure_first_zero_candidate_schema_has_no_empty_enum tests.test_mrc_0_6_4_intake_technical_hold_diagnostics.Mrc064FailureFirstTests.test_41_failure_first_kimi_strict_mock_accepts_zero_candidate_schema",
+    "pre_repair_exit_code": 1,
+    "pre_repair_tests_run": 2,
+    "pre_repair_failures": 1,
+    "pre_repair_errors": 1,
+    "observed": [
+      "zero-candidate builder emitted one nested enum: []",
+      "Kimi-shaped schema-checking mock rejected the adjudication request with the historical Moonshot HTTP 400 signature"
+    ],
+    "real_api_calls": 0,
+    "real_manuscripts_read_or_transmitted": 0
+  },
+  "zero_candidate_moonshot_schema_source_repaired": {
+    "schema_delivery_contract_version": "mrc-canonical-schema-delivery-2.0",
+    "schema_delivery_contract_sha256": "ff493b0cdef5689ff237e4a42035542d2737d0fe2300104ef9a81f7673107ae1",
+    "dynamic_adjudication_schema_version": "mrc-dynamic-adjudication-schema-2.0",
+    "dynamic_adjudication_schema_contract_sha256": "47cb8cb2f56fccd59559c0885acfa5358301a57dcaae97e2d0425444f5a8f413",
+    "candidate_exact_set_contract_version": "mrc-candidate-exact-set-2.0",
+    "candidate_exact_set_contract_sha256": "6d8e946c176debfa6a0bf96594813aacdeab241489e1f0ce91722d1f06799133",
+    "schema_definition_lint_contract_version": "mrc-schema-definition-lint-1.0",
+    "schema_definition_lint_contract_sha256": "c30cac1c8dd91ca6a70c636ffd48788cd80da7835657f62dc72a979e13a52d82",
+    "zero_candidate_cardinality": [0, 0],
+    "zero_candidate_enum_is_nonempty_canonical_dimensions": true,
+    "nonempty_candidate_enum_remains_exact": true,
+    "schema_definition_failure_error_code": "SCHEMA_DEFINITION_INVALID",
+    "invalid_schema_request_dispatched": false,
+    "focused_source_tests": 49,
+    "full_source_tests": 350,
+    "kimi_shaped_mock_parses_dynamic_schema": true,
+    "deepseek_kimi_gemini_mock_matrix": "PASS",
+    "schema_builder_lint_failure_returns_structured_hold": true,
+    "schema_builder_lint_failure_physical_attempts": {
+      "coverage": 1,
+      "adjudication": 0
+    },
+    "schema_builder_lint_failure_preserves_coverage_usage": true,
+    "builder_invocations": 0,
+    "result": "SOURCE_REPAIRED_PENDING_INDEPENDENT_PREBUILD_ONLY"
+  },
+  "independent_prebuild_schema_builder_hold_and_repair": {
+    "historical_independent_status": "HOLD",
+    "historical_unique_reason": "SchemaDefinitionError raised by dynamic adjudication schema construction escaped analyze_manuscript before a structured local hold could be returned",
+    "historical_observed_physical_attempts": {
+      "coverage": 1,
+      "adjudication": 0
+    },
+    "historical_lint_receipt_error_code": "SCHEMA_DEFINITION_INVALID",
+    "historical_lint_receipt_request_dispatched": false,
+    "historical_analysis_result_formed": false,
+    "repair": "catch schema-definition failure at dynamic adjudication schema construction, return TECHNICAL_EXECUTION_HOLD, retain coverage usage, and make no adjudication request",
+    "targeted_regression": "test_47_adjudication_schema_builder_error_is_structured_before_second_dispatch",
+    "targeted_regression_status": "PASS",
+    "focused_source_tests_after_repair": 49,
+    "full_source_tests_after_repair": 350,
+    "independent_prebuild_rerun_status": "PASS",
+    "independent_prebuild_provider_matrix_requests": 9,
+    "independent_prebuild_invalid_schema_classes": 7,
+    "independent_prebuild_full_source_tests": 350,
+    "independent_prebuild_repository_edits": 0,
+    "independent_prebuild_real_api_calls": 0,
+    "independent_prebuild_real_manuscripts_read_or_transmitted": 0,
+    "independent_prebuild_source_cache_delta": 0,
+    "builder_invocations": 0
+  },
+  "semantic_false_stop_external_hold": {
+    "evidence_received_at_local": "2026-08-28T20:32:15.0709394+08:00",
+    "manuscript_sha256": "B0EBD8E1F17FD8A20C9A8F0F7179579E8CFD63F4AEEAD8831339187AC21E2732",
+    "live_provider": "deepseek",
+    "live_model": "deepseek-v4-pro",
+    "live_pipeline_completed": ["coverage", "adjudication", "presentation"],
+    "live_verdict": "STOP_REVISING",
+    "control_review_status": "MAJOR_REVISION_REQUIRED",
+    "control_revision_cutoff_reached": "no",
+    "control_issue_levels": {"I-001": "Blocker", "I-002-I-005": "Major"},
+    "classification": "out-of-scope semantic false-negative architecture defect; not mixed into the zero-candidate schema repair",
+    "real_manuscript_read_or_replayed_in_schema_repair": false,
+    "build_authorized": false,
+    "pass_validation_authorized": false,
+    "required_terminal_state": "HOLD_MRC_0_6_4_ZERO_CANDIDATE_SCHEMA_SOURCE_REPAIRED_BUILD_PAUSED_FOR_SEMANTIC_FALSE_STOP",
+    "subsequent_semantic_repair_authorization_received": true,
+    "historical_hold_preserved": true
+  },
+  "semantic_false_stop_failure_first_and_source_repair": {
+    "live_error_signature_source": {
+      "path_not_copied_to_repository": true,
+      "source_bytes": 67999,
+      "source_sha256": "AB4E4F3F045E40F5D8116E0E5E496CB94C8E7BF3B3EC39848D2C73A0B0AABF00",
+      "boolean_signature_match_only": true,
+      "raw_response_persisted": false,
+      "live_request_replayed": false
+    },
+    "failure_first_command": "PYTHONDONTWRITEBYTECODE=1 python -B -m unittest tests.test_mrc_0_6_4_intake_technical_hold_diagnostics.Mrc064FailureFirstTests.test_50_failure_first_zero_candidates_allow_independent_canonical_causes tests.test_mrc_0_6_4_intake_technical_hold_diagnostics.Mrc064FailureFirstTests.test_51_failure_first_coverage_miss_accepts_grounded_independent_addition tests.test_mrc_0_6_4_intake_technical_hold_diagnostics.Mrc064FailureFirstTests.test_52_failure_first_stop_requires_explicit_two_stage_affirmative_sufficiency",
+    "pre_repair_exit_code": 1,
+    "pre_repair_tests_run": 3,
+    "pre_repair_failures": 2,
+    "pre_repair_errors": 1,
+    "pre_repair_observed": [
+      "zero coverage candidates forced adjudication maxItems=0",
+      "a grounded canonical coverage miss was rejected as an extra candidate",
+      "coverage and adjudication had no explicit affirmative sufficiency contract"
+    ],
+    "coverage_contract_version": "mrc-whole-manuscript-coverage-3.0",
+    "coverage_schema_sha256": "1bfa12b332288ad6d255c53ee59c8674dc9f05c50a115b6873c2b3d5e22ed700",
+    "adjudication_contract_version": "mrc-root-cause-adjudication-2.0",
+    "contradiction_gate_version": "mrc-cross-stage-contradiction-gate-2.0",
+    "schema_delivery_contract_version": "mrc-canonical-schema-delivery-3.0",
+    "schema_delivery_contract_sha256": "1d6ec1220ee3fb09d7e3f02d0707f2ff6e5f70e28f9a33466c697e37a588df8d",
+    "dynamic_adjudication_schema_version": "mrc-dynamic-adjudication-schema-3.0",
+    "dynamic_adjudication_schema_contract_sha256": "f90a9e6976ba7a077dd6c29a92fff2986ee025eaee4439f0cb5af8fe6f6c36f0",
+    "candidate_binding_contract_version": "mrc-candidate-lower-bound-independent-additions-1.0",
+    "candidate_binding_contract_sha256": "80f31602def4c49f26cfd261b0b0f61cec5376b94908abccd790b52b2f51f300",
+    "affirmative_stop_contract_version": "mrc-affirmative-stop-gate-1.0",
+    "affirmative_stop_contract_sha256": "53c596c51f7b90b2b5283d0b54b5e2d2cfaabccc9866b4f53d4076049b3b0988",
+    "schema_definition_lint_contract_version": "mrc-schema-definition-lint-1.0",
+    "schema_definition_lint_contract_sha256": "c30cac1c8dd91ca6a70c636ffd48788cd80da7835657f62dc72a979e13a52d82",
+    "machine_state_contract_version": "mrc-machine-state-2.0",
+    "machine_receipt_contract_version": "mrc-machine-receipt-3.0",
+    "zero_candidate_adjudication_schema_sha256": "d3607082650c98e080ef4a99495e595be0e2874bb6ac7f74c13d19dac25e4b03",
+    "truth_table": {
+      "zero_candidates_plus_central_grounded_addition": "REOPEN_SUBSTANTIVE_REVISION",
+      "zero_candidates_plus_local_grounded_addition": "ONE_BOUNDED_ROUND",
+      "zero_candidates_plus_two_stage_affirmative_sufficiency": "STOP_REVISING",
+      "coverage_candidate_plus_grounded_independent_addition": "BINDING_PASS_WITH_COVERAGE_DISAGREEMENT",
+      "unknown_duplicate_unlocatable_or_speculative_addition": "FAIL_CLOSED"
+    },
+    "focused_semantic_and_0_6_4_tests": 62,
+    "full_source_tests": 363,
+    "provider_schema_prompt_matrix_requests": 9,
+    "mutation_exact_ceiling_detected": true,
+    "mutation_removed_independent_additions_permission_detected": true,
+    "all_zero_candidate_forced_revise_mutation_rejected_by_stop_control": true,
+    "real_api_calls": 0,
+    "real_keys_read": 0,
+    "real_manuscripts_transmitted": 0,
+    "independent_prebuild_status": "PASS",
+    "independent_official_source_tests": 363,
+    "independent_synthetic_forward_tests": 33,
+    "independent_total_tests": 396,
+    "independent_mock_requests": 19,
+    "independent_invalid_schema_classes_api_zero": 7,
+    "independent_source_tree_file_count": 75,
+    "independent_source_tree_sha256_before_after": "AE48977E3BE03A596BFBB766592B740940B9149C297E78F84001E881A04E2F25",
+    "independent_repository_edits": 0,
+    "independent_source_cache_delta": 0,
+    "independent_real_api_key_network": 0,
+    "baoshan_identity_only": {
+      "bytes_before": 88539,
+      "sha256_before": "B0EBD8E1F17FD8A20C9A8F0F7179579E8CFD63F4AEEAD8831339187AC21E2732",
+      "bytes_after": 88539,
+      "sha256_after": "B0EBD8E1F17FD8A20C9A8F0F7179579E8CFD63F4AEEAD8831339187AC21E2732",
+      "content_opened_or_copied_to_repository": false,
+      "provider_requests": 0
+    },
+    "builder_invocations": 0,
+    "process_build_gate": {
+      "running_process_count": 2,
+      "running_process_ids": [15140, 25828],
+      "processes_terminated_by_codex": 0,
+      "builder_invocations": 0,
+      "old_exe_overwritten": false
+    },
+    "result": "HOLD_MRC_0_6_4_SEMANTIC_SOURCE_ACCEPTED_BUILD_WAITING_FOR_USER_PROCESS_CLOSE"
+  },
+  "single_frozen_build_and_terminal_acceptance_hold": {
+    "recorded_at_local": "2026-08-28T23:39:19.0039846+08:00",
+    "builder_invocations": 1,
+    "new_exe_bytes": 10666040,
+    "new_exe_sha256": "4969FC25102F018FA75074940FAFECBC7188A77C78DB3F60E14A4D2384975E2D",
+    "sidecar_sha256": "033C458C333D3CFE95558751DA6939C7960BC94E958A2DEBBDE631701AF98860",
+    "build_receipt_sha256": "78A0E9A864342C5B6900F2A83E761DE75A6F39C8F9238693E3E62BFCC6F46BDA",
+    "official_frozen_acceptance": "22 cases / 35 loopback requests PASS",
+    "independent_frozen_forward_behavior": "3 cases / 6 loopback requests PASS",
+    "combined_frozen_behavior": "25 cases / 41 loopback requests PASS",
+    "unique_hold_reason": "The required invalid-schema -> API=0 property was not directly exercised through the frozen executable because no frozen schema-injection surface exists; source-only evidence cannot satisfy the explicit frozen black-box requirement.",
+    "second_build_performed": false,
+    "terminal_status": "HOLD_MRC_0_6_4_FROZEN_INVALID_SCHEMA_API_ZERO_BLACKBOX_EVIDENCE_GAP"
+  },
+  "user_authorized_composition_evidence_acceptance_amendment": {
+    "recorded_at_local": "2026-08-28T23:50:32.1133145+08:00",
+    "user_authorized_acceptance_amendment": true,
+    "superseded_hold_status": "HOLD_MRC_0_6_4_FROZEN_INVALID_SCHEMA_API_ZERO_BLACKBOX_EVIDENCE_GAP",
+    "superseded_hold_validation_receipt_sha256": "245F9B4286CD814ABBEC369B1347D3C27D8DE1FE2A0AD9F239CAC5AA8397BBCD",
+    "acceptance_classification": "EQUIVALENT_COMPOSITION_EVIDENCE_ACCEPTED",
+    "frozen_invalid_schema_direct_injection_executed": false,
+    "equivalent_composition_evidence_accepted": true,
+    "composition_evidence": {
+      "source_negative_fault_injection": "4/4 PASS; recursive schema lint rejected invalid definitions before dispatch; dispatch=0",
+      "source_to_build_identity_binding": "17/17 contract checks PASS; 7/7 release document parity checks PASS",
+      "frozen_positive_and_boundary_behavior": "official 22 cases / 35 loopback requests PASS plus independent 3 cases / 6 requests PASS; combined 25/41"
+    },
+    "precise_claim": "All production-reachable frozen schema paths generated valid provider payloads and passed loopback behavior checks. Artificial internal invalid schemas were proven at source level to stop before dispatch. No invalid schema was injected through the production frozen CLI or GUI, which intentionally exposes no such injection surface.",
+    "historical_test_facts_rewritten": false,
+    "source_or_skill_files_modified": false,
+    "builder_invocations_added": 0,
+    "exe_sidecar_or_build_receipt_modified": false,
+    "result": "PASS_MRC_0_6_4_SEMANTIC_FALSE_STOP_REPAIRED_AND_FROZEN_EXE_ACCEPTED_AWAITING_GIT_INTEGRATION_AUTHORIZATION"
+  },
+  "boundaries": {
+    "real_api_calls": 0,
+    "real_manuscript_content_read": 0,
+    "real_manuscript_identity_hash_checks": 2,
+    "secret_values_read_or_persisted": 0,
+    "source_cache_directories_final": 0,
+    "source_bytecode_files_final": 0,
+    "temporary_py_compile_cache_directories_created_then_removed": 2,
+    "builder_invocations": 0,
+    "running_mrc_pids_observed_but_not_terminated": [15140, 25828]
+  }
+}

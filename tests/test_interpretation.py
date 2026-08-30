@@ -190,6 +190,101 @@ class InterpretationTests(unittest.TestCase):
         self.assertEqual(1290, captured.exception.runtime["usage"]["total_tokens"])
         self.assertNotIn("Here is the interpretation", str(captured.exception.runtime))
 
+    def test_key_aliasing_and_item_normalization_in_selective_findings_and_adjustments(self) -> None:
+        aliased = dict(VALID_INTERPRETATION)
+        aliased["selective_findings"] = [
+            {
+                "area": "摘要与结论",
+                "finding": "核心贡献在首尾形成了可辨认的呼应。",
+                "implication": "这有助于读者把握论文的主要分析推进。",
+                "extra_reasoning_field": "忽略此额外字段",
+            }
+        ]
+        aliased["optional_micro_adjustments"] = [
+            {
+                "section": "摘要",
+                "suggestion": "如仍希望微调，可只检查贡献句是否足够靠前且直接。",
+                "protect": "不得提高确定性、因果性或适用范围。",
+            }
+        ]
+        validated = validate_interpretation(aliased)
+        self.assertEqual(
+            {
+                "area": "摘要与结论",
+                "observation": "核心贡献在首尾形成了可辨认的呼应。",
+                "significance": "这有助于读者把握论文的主要分析推进。",
+            },
+            validated["selective_findings"][0],
+        )
+        self.assertEqual(
+            {
+                "area": "摘要",
+                "suggestion": "如仍希望微调，可只检查贡献句是否足够靠前且直接。",
+                "protect": "不得提高确定性、因果性或适用范围。",
+            },
+            validated["optional_micro_adjustments"][0],
+        )
+
+    def test_chinese_key_aliasing_and_missing_empty_lists_normalize(self) -> None:
+        chinese_aliased = {
+            "status_explanation": "核心裁决表明不应重启一般性实质修改，但这不等于投稿手续已经自动完成。",
+            "judgment_basis": ["完整稿件依据。", "Closure Card 依据。"],
+            "judgment_principles": ["原则一。", "原则二。", "原则三。"],
+            "assessment_dimensions": [
+                {"维度": "稿件身份", "观察": "当前身份明确。", "影响": "核心裁决闭合。"},
+                {"维度": "贡献层级", "观察": "主要贡献可辨认。", "影响": "无需重写。"},
+                {"维度": "证据边界", "观察": "现有边界应保护。", "影响": "不得增强主张。"},
+                {"维度": "章节结构", "观察": "章节角色互补。", "影响": "不建议重做。"},
+                {"维度": "双轴状态", "观察": "投稿事项独立。", "影响": "不能重开改稿。"},
+            ],
+            "selective_findings": [
+                {"区域": "方法部分", "观察": "方法交代完整。", "意义": "读者可复核。"}
+            ],
+            "pre_submission_checklist": ["核对一。", "核对二。", "核对三。"],
+            "report_limitations": ["局限一。", "局限二。"],
+            "boundary_note": "本解读不是事实认证或投稿授权。",
+        }
+        validated = validate_interpretation(chinese_aliased)
+        self.assertEqual([], validated["what_is_stable"])
+        self.assertEqual([], validated["remaining_attention"])
+        self.assertEqual([], validated["optional_micro_adjustments"])
+        self.assertEqual("稿件身份", validated["assessment_dimensions"][0]["dimension"])
+        self.assertEqual("方法部分", validated["selective_findings"][0]["area"])
+        self.assertEqual("读者可复核。", validated["selective_findings"][0]["significance"])
+
+    def test_non_cjk_area_tags_and_english_dimensions_normalize(self) -> None:
+        raw_data = dict(VALID_INTERPRETATION)
+        raw_data["selective_findings"] = [
+            {
+                "area": "Section 3.2",
+                "observation": "该小节对变量控制做出了细致解释。",
+                "significance": "有助于读者理解实证分析的严谨性。",
+            },
+            {
+                "area": "3.1",
+                "observation": "数据源说明完整。",
+                "significance": "便于复现与核验。",
+            },
+            {
+                "area": "71_Q_b",
+                "observation": "问答包与正文形成互补。",
+                "significance": "支撑了核心结论。",
+            },
+        ]
+        raw_data["assessment_dimensions"] = [
+            {"dimension": "methods_and_research_design", "finding": "设计严谨。", "implication": "保持稳定。"},
+            {"dimension": "contribution", "finding": "边际贡献清晰。", "implication": "无需重构。"},
+            {"dimension": "theory_and_concepts", "finding": "界定清楚。", "implication": "论证自洽。"},
+            {"dimension": "whole_paper_argument", "finding": "首尾呼应。", "implication": "结构稳定。"},
+            {"dimension": "evidence_and_analysis", "finding": "证据充分。", "implication": "主张合理。"},
+        ]
+        validated = validate_interpretation(raw_data)
+        self.assertEqual("方法与研究设计", validated["assessment_dimensions"][0]["dimension"])
+        self.assertEqual("贡献与创新层级", validated["assessment_dimensions"][1]["dimension"])
+        self.assertIn("3.2", validated["selective_findings"][0]["area"])
+        self.assertIn("3.1", validated["selective_findings"][1]["area"])
+        self.assertIn("71_Q_b", validated["selective_findings"][2]["area"])
+
     def test_markdown_renderer_and_saved_result_receipt_extraction(self) -> None:
         markdown = render_interpretation_markdown(VALID_INTERPRETATION)
         self.assertIn("# 稿件截止判断中文解读", markdown)

@@ -102,18 +102,19 @@ GUI 还会按 API 返回的实际 token usage 和官方价格页估算本次费�
 安全边界见 [`STANDALONE.zh-CN.md`](STANDALONE.zh-CN.md)。Standalone 版本与
 Skill 版本分别管理，不改变本 Skill 的 `0.2.1` 合同版本。
 
-Standalone 0.6.3 使用可见的多模型下拉框，并按 DeepSeek、Kimi、Gemini
+Standalone 0.6.4 使用可见的多模型下拉框，并按 DeepSeek、Kimi、Gemini
 具体模型的官方能力动态提供思考开关或强度选项；不支持的组合在调用前拒绝。
 核心判断和可选中文解读均使用结构化输出；Gemini 与 Kimi 额外提交精确 JSON Schema，
 并在本地只接受唯一完整对象及精确十一键合同。解读格式失败时仍记录该次调用的
 token usage 用于费用估算。程序不再设置 5000 token 的小型输出截断，而按提供商设置
 DeepSeek 384K、Kimi 128K、Gemini 64K 的高余量，并明确识别长度截断。Kimi/DeepSeek 以人民币官方价为原币，
 Gemini 以美元官方价为原币，再用带日期的 ECB USD/CNY 参考汇率显示双币种估算。
-核心判断采用两次绑定调用：十维整稿覆盖 pass 与重新读取全文的 root-cause adjudication pass；
-coverage 的 canonical SHA-256、候选维度、hold 和保护不变量由本地 contradiction gate 独立复核。
-0.6.3 在该门通过后先冻结 canonical machine state，再验证公开自然语言。中文展示缺陷最多触发一次不含稿件的 schema-bound presentation-only request，且该请求不自动重试；失败只形成可恢复 presentation HOLD，不清除机器裁决或 usage。受保护事项的 authoritative source identity 与本地化 display text 分开绑定，每次运行只发布一个幂等 terminal event。
+核心判断采用两次绑定调用：十维整稿覆盖 pass 与真正独立、重新读取全文的 root-cause adjudication pass。coverage candidates 是第二阶段必须逐项复核的下限，不是上限；第二阶段可补充 coverage 漏报的 canonical、已观察、可定位且非重复的材料性维度。本地 contradiction gate 独立复核 coverage canonical SHA-256、candidate binding、双阶段肯定性 STOP、hold 和保护不变量。STOP 必须由两阶段对贡献、全稿论证、理论、方法、证据与章节连贯性作出肯定性充分判断；仅有谨慎、保护范围或没有夸大不能证明充分。
+0.6.4 在该门通过后先冻结 canonical machine state，再验证公开自然语言。中文展示缺陷最多触发一次不含稿件的 schema-bound presentation-only request，且该请求不自动重试；失败只形成可恢复 presentation HOLD，不清除机器裁决或 usage。`mrc-local-technical-preflight-1.0` 仅阻断文件不可读、不支持/提取失败、零有效文本、超限或配置失败；标题、固定章节、顺序、编号、ATX/Setext/plain、YAML/TOML front matter 只产生 best-effort 格式 advisory，不能改变 provider routing。每次可能外发全文的运行默认拒绝，必须重新完成 `mrc-provider-transmission-consent-1.0` 明确确认，并绑定当前文件 SHA-256、provider 与 model；取消为用户未授权状态，API=0，不伪造成稿件或技术 HOLD。第一次且唯一一次 coverage 使用 `mrc-whole-manuscript-coverage-3.0` 与 `mrc-semantic-manuscript-basis-1.0` 判断整稿实质材料是否充分，不得仅因非传统格式判不足。basis 不足时只发生一次 coverage 并准确记录 usage/cost，adjudication=0、无 machine verdict、无 presentation source；HTTP/schema/binding 失败仍是独立 technical HOLD。provider error 仅公开经过限长与脱敏的 status、code 和单行 detail。
 Kimi 覆盖阶段默认等待 300 秒，根因裁决和中文解读默认等待 900 秒；read/socket timeout
-coverage、adjudication、presentation repair 与 interpretation 均只允许一次物理 HTTP attempt；timeout、网络状态不明、429、502、503、504 都不会自动重发全文。收据把已知 usage 小计与 `UNKNOWN_POTENTIAL_CHARGE` 请求分开表达，避免把未知 usage 当作零费用。
+coverage、adjudication、presentation repair 与 interpretation 均只允许一次物理 HTTP attempt；timeout、网络状态不明、429、502、503、504 都不会自动重发全文。收据把已知 usage 小计与 `UNKNOWN_POTENTIAL_CHARGE` 请求分开表达，避免把未知 usage 当作零费用；即使实时价格不可用，完整 usage 回执计数也不会被抹除。
+
+动态 adjudication schema 在 dispatch 前经过 `mrc-schema-definition-lint-1.0`。`mrc-dynamic-adjudication-schema-3.0` 对零候选采用 `minItems=0`、有限 canonical 上限和非空 canonical enum，使独立第二阶段可恢复已观察、可定位的 coverage 漏报，同时不生成 provider 非法的 `enum: []`。未知、重复、不可定位、臆测或无解释的补充均 fail closed。任何 schema definition 错误均在本地以 `SCHEMA_DEFINITION_INVALID` 停止，不会形成该阶段的付费请求。
 
 ## 调用
 

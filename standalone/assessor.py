@@ -15,6 +15,7 @@ from scripts.closure_state import (
     ClosureStateError,
     EVIDENCE_HOLD_CODES,
     SUBMISSION_HOLD_CODES,
+    TECHNICAL_HOLD_CONTRACT_VERSION,
     decide_state,
     minimal_receipt,
     public_card,
@@ -25,25 +26,36 @@ from .document_reader import DocumentContent, DocumentReadError, read_document
 from .events import EventSink, RunPhase
 from .harness import (
     ADJUDICATION_CONTRACT_VERSION,
-    CANDIDATE_EXACT_SET_CONTRACT_VERSION,
+    AFFIRMATIVE_STOP_DIMENSIONS,
+    AFFIRMATIVE_STOP_CONTRACT_VERSION,
+    AFFIRMATIVE_SUFFICIENCY_KEYS,
+    CANDIDATE_BINDING_CONTRACT_VERSION,
     COVERAGE_CONTRACT_VERSION,
     COVERAGE_DIMENSIONS,
     COVERAGE_JSON_SCHEMA,
+    MANUSCRIPT_BASIS_CONTRACT_VERSION,
+    ROOT_CAUSE_DISPOSITION_CODES,
+    ROOT_CAUSE_ORIGINS,
+    SCHEMA_DEFINITION_LINT_VERSION,
+    SUFFICIENCY_REASON_CODES,
     ContextBudgetReceipt,
     HarnessContractError,
     IntakeReceipt,
+    SchemaDefinitionError,
+    affirmative_stop_gate_receipt,
     analyze_intake_structure,
     canonical_digest,
     build_adjudication_json_schema,
-    candidate_exact_set_receipt,
+    candidate_binding_receipt,
     context_budget,
     coverage_is_complete,
     harness_receipt,
     validate_adjudication_binding,
-    validate_candidate_exact_set,
+    validate_candidate_binding,
     validate_coverage,
     validate_cross_stage_consistency,
     validate_json_schema_contract,
+    validate_schema_definition,
     schema_sha256,
 )
 from .localization import localize_closure_card
@@ -69,6 +81,7 @@ from .providers import (
     load_provider_config,
     provider_capability,
     provider_stage_timeout_seconds,
+    resolve_provider_selection,
     validate_reasoning_option,
 )
 
@@ -76,6 +89,7 @@ from .providers import (
 MODEL_KEYS = frozenset(
     {
         "material_root_causes",
+        "affirmative_sufficiency",
         "evidence_hold_codes",
         "submission_hold_codes",
         "protected",
@@ -83,11 +97,57 @@ MODEL_KEYS = frozenset(
         "lite_suggestions",
     }
 )
+PROVIDER_TRANSMISSION_CONSENT_VERSION = "mrc-provider-transmission-consent-1.0"
+
+
+@dataclass(slots=True)
+class ProviderTransmissionConsent:
+    artifact_sha256: str
+    provider: str
+    model: str
+    confirmed_at: str
+    confirmed: bool = False
+    contract_version: str = PROVIDER_TRANSMISSION_CONSENT_VERSION
+    _consumed: bool = False
+
+    def set_decision(self, confirmed: bool) -> None:
+        if self._consumed:
+            raise ValueError("provider transmission consent was already consumed")
+        self.confirmed = confirmed
+
+    def consume(self, *, artifact_sha256: str, provider: str, model: str) -> bool:
+        if self._consumed:
+            return False
+        self._consumed = True
+        return bool(
+            self.confirmed
+            and self.contract_version == PROVIDER_TRANSMISSION_CONSENT_VERSION
+            and self.artifact_sha256 == artifact_sha256
+            and self.provider == provider
+            and self.model == model
+            and self.confirmed_at.strip()
+        )
+
+
+def prepare_provider_transmission_consent(
+    *, artifact_sha256: str, provider: str, model: str, confirmed: bool = False
+) -> ProviderTransmissionConsent:
+    return ProviderTransmissionConsent(
+        artifact_sha256=artifact_sha256,
+        provider=provider,
+        model=model,
+        confirmed_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        confirmed=confirmed,
+    )
 ROOT_CAUSE_KEYS = frozenset(
     {
         "observed",
         "locatable",
         "dimension",
+        "origin",
+        "coverage_disagreement",
+        "disposition_reason_code",
+        "author_decision_required",
         "style_only",
         "hold_only",
         "verification_only",
@@ -114,6 +174,7 @@ class RunOptions:
     timeout_seconds: float | None = None
     transient_retries: int = 0
     enable_presentation_repair: bool = True
+    provider_transmission_consent: bool | ProviderTransmissionConsent = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -137,6 +198,7 @@ class AnalysisResult:
     run_status: dict[str, str] = field(default_factory=dict)
     machine_receipt: dict[str, Any] = field(default_factory=dict)
     presentation_receipt: dict[str, Any] = field(default_factory=dict)
+    consent_receipt: dict[str, Any] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
         status = dict(self.run_status)
@@ -202,6 +264,7 @@ class AnalysisResult:
                 "usage_status": status.get("usage_status"),
                 "machine_receipt": deepcopy(self.machine_receipt),
                 "presentation_receipt": deepcopy(self.presentation_receipt),
+                "provider_transmission_consent": deepcopy(self.consent_receipt),
                 "raw_provider_response_persisted": False,
                 "automatic_result_file_written": False,
                 "harness": deepcopy(self.harness),
@@ -250,16 +313,50 @@ def validate_model_state(value: Mapping[str, Any]) -> dict[str, Any]:
     for cause in causes:
         if not isinstance(cause, dict) or set(cause) != ROOT_CAUSE_KEYS:
             raise ModelContractError("each material root cause must match the exact finite schema")
-        for name in ROOT_CAUSE_KEYS - {"dimension", "scope"}:
+        boolean_fields = ROOT_CAUSE_KEYS - {
+            "dimension",
+            "scope",
+            "origin",
+            "disposition_reason_code",
+        }
+        for name in boolean_fields:
             if not isinstance(cause[name], bool):
                 raise ModelContractError(f"material root cause {name} must be boolean")
         dimension = cause["dimension"]
         if dimension not in COVERAGE_DIMENSIONS:
             raise ModelContractError("material root cause dimension must use the registered coverage set")
+        if cause["origin"] not in ROOT_CAUSE_ORIGINS:
+            raise ModelContractError("material root cause origin is invalid")
+        if cause["disposition_reason_code"] not in ROOT_CAUSE_DISPOSITION_CODES:
+            raise ModelContractError("material root cause disposition reason is invalid")
         if cause["scope"] not in {"local", "central"}:
             raise ModelContractError("material root cause scope must be local or central")
         clean_cause = {key: item for key, item in cause.items() if key != "dimension"}
         clean_causes.append({**clean_cause, "affects": [dimension]})
+    sufficiency_rows = value["affirmative_sufficiency"]
+    if not isinstance(sufficiency_rows, list) or len(sufficiency_rows) != len(
+        AFFIRMATIVE_STOP_DIMENSIONS
+    ):
+        raise ModelContractError("affirmative_sufficiency must cover every STOP dimension")
+    clean_sufficiency: list[dict[str, Any]] = []
+    observed_sufficiency_dimensions: list[str] = []
+    for row in sufficiency_rows:
+        if not isinstance(row, dict) or set(row) != AFFIRMATIVE_SUFFICIENCY_KEYS:
+            raise ModelContractError("affirmative sufficiency row key set mismatch")
+        dimension = row["dimension"]
+        if dimension not in AFFIRMATIVE_STOP_DIMENSIONS:
+            raise ModelContractError("affirmative sufficiency dimension is invalid")
+        for name in ("assessed", "affirmative_sufficiency", "unresolved_material_concern"):
+            if not isinstance(row[name], bool):
+                raise ModelContractError(f"affirmative sufficiency {name} must be boolean")
+        if row["sufficiency_reason_code"] not in SUFFICIENCY_REASON_CODES:
+            raise ModelContractError("affirmative sufficiency reason code is invalid")
+        observed_sufficiency_dimensions.append(dimension)
+        clean_sufficiency.append(dict(row))
+    if set(observed_sufficiency_dimensions) != set(AFFIRMATIVE_STOP_DIMENSIONS) or len(
+        set(observed_sufficiency_dimensions)
+    ) != len(observed_sufficiency_dimensions):
+        raise ModelContractError("affirmative sufficiency dimension set must be exact")
     evidence = _string_list(
         value["evidence_hold_codes"],
         "evidence_hold_codes",
@@ -295,6 +392,7 @@ def validate_model_state(value: Mapping[str, Any]) -> dict[str, Any]:
         clean_suggestions.append(clean)
     return {
         "material_root_causes": clean_causes,
+        "affirmative_sufficiency": clean_sufficiency,
         "evidence_hold_codes": list(dict.fromkeys(evidence)),
         "submission_hold_codes": list(dict.fromkeys(submission)),
         "protected": protected,
@@ -322,17 +420,19 @@ def _aggregate_usage(usages: Sequence[Mapping[str, int]]) -> dict[str, int]:
 
 def _base_state(document: DocumentContent, options: RunOptions, intake: IntakeReceipt) -> dict[str, Any]:
     identity = (options.manuscript_identity or document.path.name).strip()
-    complete = bool(options.confirm_complete_current_manuscript and intake.complete_structure)
+    locally_processable = bool(document.text.strip() and intake.local_preflight_passed)
     state: dict[str, Any] = {
-        "manuscript_complete": complete,
+        "manuscript_complete": locally_processable,
         "current_identity_clear": bool(identity),
-        "whole_manuscript_read": complete and document.critical_basis_available,
-        "critical_basis_available": document.critical_basis_available and intake.complete_structure,
-        "bounded_scope": not options.confirm_complete_current_manuscript,
+        "whole_manuscript_read": locally_processable,
+        "critical_basis_available": locally_processable,
+        "bounded_scope": False,
         "current_manuscript_identity": identity,
         "current_artifact_sha256": document.artifact_sha256,
         "current_semantic_content_sha256": document.semantic_content_sha256,
         "material_root_causes": [],
+        "affirmative_sufficiency": [],
+        "affirmative_stop_gate_passed": False,
         "evidence_hold_codes": [],
         "submission_hold_codes": list(document.submission_hold_codes),
         "protected": [],
@@ -351,6 +451,39 @@ def _base_state(document: DocumentContent, options: RunOptions, intake: IntakeRe
             if isinstance(previous, list):
                 state[field_name] = list(dict.fromkeys([*state[field_name], *previous]))
     return state
+
+
+def _provider_transmission_consent_receipt(
+    raw: bool | ProviderTransmissionConsent,
+    *,
+    artifact_sha256: str,
+    provider: str,
+    model: str,
+) -> tuple[bool, dict[str, Any]]:
+    recorded_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    binding_match = raw is True
+    authorized = raw is True
+    if isinstance(raw, ProviderTransmissionConsent):
+        binding_match = bool(
+            raw.contract_version == PROVIDER_TRANSMISSION_CONSENT_VERSION
+            and raw.artifact_sha256 == artifact_sha256
+            and raw.provider == provider
+            and raw.model == model
+        )
+        authorized = raw.consume(
+            artifact_sha256=artifact_sha256,
+            provider=provider,
+            model=model,
+        )
+    return authorized, {
+        "contract_version": PROVIDER_TRANSMISSION_CONSENT_VERSION,
+        "status": "CONFIRMED" if authorized else "NOT_AUTHORIZED",
+        "binding_match": binding_match,
+        "artifact_sha256": artifact_sha256,
+        "provider": provider,
+        "model": model,
+        "recorded_at": recorded_at,
+    }
 
 
 def _status(
@@ -403,7 +536,7 @@ def _synthetic_physical_receipts(
         outcome = provider_outcome if number == count else "UNKNOWN"
         result.append(
             {
-                "contract_version": "mrc-provider-request-transaction-1.0",
+                "contract_version": "mrc-provider-request-transaction-2.0",
                 "request_id": str(uuid.uuid4()),
                 "stage": stage,
                 "provider": provider,
@@ -419,11 +552,19 @@ def _synthetic_physical_receipts(
                 "retry_after": None,
                 "error_class": type(error).__name__ if error is not None else None,
                 "error_summary": str(error)[:500] if error is not None else None,
+                "provider_error_detail_contract_version": "mrc-provider-error-detail-1.0",
+                "provider_error_status": None,
+                "provider_error_code": None,
+                "provider_error_detail": None,
                 "usage_status": usage_status(item_usage),
                 "usage": item_usage,
                 "schema_sha256": schema_digest,
                 "coverage_digest_sha256": coverage_digest,
                 "schema_delivery_mode": provider_capability(provider)["schema_delivery_mode"],
+                "schema_definition_lint_contract_version": (
+                    SCHEMA_DEFINITION_LINT_VERSION if schema_digest else None
+                ),
+                "schema_definition_lint_status": "PASS" if schema_digest else None,
                 "started_at": now,
                 "finished_at": now,
                 "test_transport": "mocked_completion",
@@ -475,6 +616,8 @@ def _provider_receipt_completed(
         "schema_sha256": schema_digest,
         "coverage_digest_sha256": coverage_digest,
         "provider_capability": provider_capability(provider),
+        "schema_definition_lint_contract_version": SCHEMA_DEFINITION_LINT_VERSION,
+        "schema_definition_lint_status": "PASS",
         "physical_request_receipts": physical,
         "budget": dict(budget),
         "committed_in_memory": True,
@@ -510,6 +653,7 @@ def _provider_receipt_failed(
             coverage_digest=coverage_digest,
             error=error,
         )
+    latest = physical[-1] if physical else {}
     return {
         "stage": stage,
         "provider_called": True,
@@ -526,10 +670,20 @@ def _provider_receipt_failed(
         "schema_sha256": schema_digest,
         "coverage_digest_sha256": coverage_digest,
         "provider_capability": provider_capability(provider),
+        "schema_definition_lint_contract_version": SCHEMA_DEFINITION_LINT_VERSION,
+        "schema_definition_lint_status": (
+            latest.get("schema_definition_lint_status")
+        ),
         "physical_request_receipts": physical,
         "budget": dict(budget),
         "error_code": "PROVIDER_REQUEST_FAILED",
         "error_message": str(error),
+        "provider_error_detail_contract_version": latest.get(
+            "provider_error_detail_contract_version", "mrc-provider-error-detail-1.0"
+        ),
+        "provider_error_status": latest.get("provider_error_status"),
+        "provider_error_code": latest.get("provider_error_code"),
+        "provider_error_detail": latest.get("provider_error_detail"),
         "committed_in_memory": True,
         "raw_provider_response_persisted": False,
     }
@@ -641,11 +795,29 @@ def _finish(
     if any(machine_decision[key] != display_decision[key] for key in parity_keys):
         raise ClosureStateError("presentation state changed deterministic verdict inputs")
     card = localize_closure_card(public_card(visible_state), state["output_language"])
+    basis_receipt = None
+    if state.get("whole_manuscript_basis") in {"SUFFICIENT", "INSUFFICIENT"}:
+        basis_receipt = {
+            "whole_manuscript_basis": state["whole_manuscript_basis"],
+            "basis_reason_codes": list(state.get("whole_manuscript_basis_reason_codes", [])),
+            "basis_explanation": str(state.get("whole_manuscript_basis_explanation", "")),
+            "basis_contract_version": MANUSCRIPT_BASIS_CONTRACT_VERSION,
+        }
+    consent_receipt = state.get("provider_transmission_consent_receipt")
     receipt = minimal_receipt(
         machine_decision,
         state["current_manuscript_identity"],
         artifact_sha256=document.artifact_sha256,
         semantic_content_sha256=document.semantic_content_sha256,
+        failed_stage=(
+            state.get("technical_failed_stage")
+            if state.get("technical_execution_hold") is True
+            else None
+        ),
+        basis_receipt=basis_receipt,
+        consent_receipt=(
+            consent_receipt if isinstance(consent_receipt, Mapping) else None
+        ),
     )
     safe_provider_receipts = tuple(deepcopy(dict(item)) for item in provider_receipts)
     physical_receipts = _flatten_physical_receipts(safe_provider_receipts)
@@ -691,6 +863,9 @@ def _finish(
         run_status=status,
         machine_receipt=deepcopy(dict(machine_receipt or {})),
         presentation_receipt=deepcopy(dict(presentation_receipt or {})),
+        consent_receipt=deepcopy(
+            dict(consent_receipt) if isinstance(consent_receipt, Mapping) else {}
+        ),
     )
 
 
@@ -707,6 +882,7 @@ def _request_stage(
 ) -> CompletionResult:
     if not budget.passed:
         raise HarnessContractError("model context budget cannot hold the complete stage input and output reserve")
+    validate_schema_definition(schema)
     completion = client.complete(
         messages,
         reasoning_option=reasoning_option,
@@ -733,18 +909,28 @@ def _machine_receipt_success(
     decision = decide_state(state)
     adjudication_schema = build_adjudication_json_schema(coverage)
     return {
-        "contract_version": "mrc-machine-receipt-2.0",
+        "contract_version": "mrc-machine-receipt-3.0",
         "status": "SUCCEEDED",
         "coverage_digest_sha256": coverage_digest,
         "adjudication_contract_version": ADJUDICATION_CONTRACT_VERSION,
         "adjudication_schema_sha256": schema_sha256(adjudication_schema),
-        "candidate_exact_set": candidate_exact_set_receipt(coverage, state),
+        "candidate_binding_contract_version": CANDIDATE_BINDING_CONTRACT_VERSION,
+        "candidate_binding": candidate_binding_receipt(coverage, state),
+        "affirmative_stop_contract_version": AFFIRMATIVE_STOP_CONTRACT_VERSION,
+        "affirmative_stop_gate": affirmative_stop_gate_receipt(coverage, state),
         "contradiction_gate_passed": True,
         "machine_state_digest_sha256": digest,
         "machine_state_digest_after_presentation_sha256": digest,
         "machine_state_parity": True,
         "deterministic_verdict": decision["verdict"],
         "reason_category": decision["reason_category"],
+        "whole_manuscript_basis": coverage["whole_manuscript_basis"],
+        "basis_reason_codes": list(coverage["basis_reason_codes"]),
+        "basis_explanation": coverage["basis_explanation"],
+        "basis_contract_version": MANUSCRIPT_BASIS_CONTRACT_VERSION,
+        "provider_transmission_consent": deepcopy(
+            state.get("provider_transmission_consent_receipt", {})
+        ),
         "evidence_hold_codes": list(decision["evidence_hold_codes"]),
         "submission_hold_codes": list(decision["submission_hold_codes"]),
         "machine_state_contract_version": machine_state_payload(
@@ -764,6 +950,7 @@ def _machine_receipt_hold(
     error_message: str,
     candidate_state: Mapping[str, Any] | None = None,
     diagnostic_receipt: Mapping[str, Any] | None = None,
+    provider_error_fields: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     coverage_digest = canonical_digest(coverage) if coverage is not None else None
     candidate_digest = None
@@ -774,12 +961,18 @@ def _machine_receipt_hold(
             candidate_full,
             coverage_digest_sha256=coverage_digest,
         )
+    decision = decide_state(state)
     result = {
-        "contract_version": "mrc-machine-receipt-2.0",
+        "contract_version": "mrc-machine-receipt-3.0",
         "status": "HOLD",
         "failed_stage": failed_stage,
         "error_code": error_code,
         "error_message": error_message,
+        "reason_category": decision["reason_category"],
+        "provider_transmission_consent": deepcopy(
+            state.get("provider_transmission_consent_receipt", {})
+        ),
+        "next_permitted_action": decision["next_permitted_action"],
         "coverage_digest_sha256": coverage_digest,
         "candidate_state_digest_sha256": candidate_digest,
         "contradiction_gate_passed": False,
@@ -788,6 +981,26 @@ def _machine_receipt_hold(
     }
     if isinstance(diagnostic_receipt, Mapping):
         result["bounded_contract_failure"] = deepcopy(dict(diagnostic_receipt))
+    if coverage is not None:
+        result.update(
+            {
+                "whole_manuscript_basis": coverage["whole_manuscript_basis"],
+                "basis_reason_codes": list(coverage["basis_reason_codes"]),
+                "basis_explanation": coverage["basis_explanation"],
+                "basis_contract_version": MANUSCRIPT_BASIS_CONTRACT_VERSION,
+            }
+        )
+    if decision["reason_category"] == "TECHNICAL_EXECUTION_HOLD":
+        result["technical_hold_contract_version"] = TECHNICAL_HOLD_CONTRACT_VERSION
+    if isinstance(provider_error_fields, Mapping):
+        for key in (
+            "provider_error_detail_contract_version",
+            "provider_error_status",
+            "provider_error_code",
+            "provider_error_detail",
+        ):
+            if key in provider_error_fields:
+                result[key] = deepcopy(provider_error_fields[key])
     return result
 
 
@@ -807,17 +1020,22 @@ def _hold_result(
     candidate_state: Mapping[str, Any] | None = None,
 ) -> AnalysisResult:
     state["whole_manuscript_read"] = False
+    state["technical_execution_hold"] = True
+    state["technical_failed_stage"] = failed_stage
     if coverage is not None:
         state["evidence_hold_codes"] = list(coverage.get("evidence_hold_codes", []))
         state["submission_hold_codes"] = list(coverage.get("submission_hold_codes", []))
+    physical_receipts = _flatten_physical_receipts(provider_receipts)
+    provider_error_fields = physical_receipts[-1] if physical_receipts else {}
     machine_receipt = _machine_receipt_hold(
         state,
         coverage,
         failed_stage=failed_stage,
-        error_code=type(error).__name__,
+        error_code=str(getattr(error, "error_code", type(error).__name__)),
         error_message=str(error),
         candidate_state=candidate_state,
         diagnostic_receipt=getattr(error, "contract_receipt", None),
+        provider_error_fields=provider_error_fields,
     )
     status = _status(
         machine_status="HOLD",
@@ -856,20 +1074,6 @@ def _hold_result(
             "usage_status": "UNKNOWN",
         },
     )
-    technical_hold = failed_stage != "intake_gate"
-    if technical_hold:
-        result.machine_receipt["reason_category"] = "TECHNICAL_EXECUTION_HOLD"
-        result.machine_receipt["technical_state_contract_version"] = "mrc-technical-execution-state-1.0"
-        result.closure_card["Reason"] = (
-            f"稿件完整性：PASS。机器裁决未形成；失败阶段：{failed_stage}。"
-            if options.output_language == "zh"
-            else f"Manuscript completeness: PASS. No machine adjudication was formed; failed stage: {failed_stage}."
-        )
-        result.closure_card["Next permitted action"] = (
-            "修复技术问题或由用户重新发起一次新任务。"
-            if options.output_language == "zh"
-            else "Repair the technical issue or start one new task explicitly."
-        )
     return result
 
 
@@ -920,6 +1124,9 @@ def analyze_manuscript(options: RunOptions, *, event_sink: EventSink | None = No
             provider_outcome=stage_receipt.get("provider_outcome"),
             http_status=final.get("http_status"),
             error_class=final.get("error_class"),
+            provider_error_status=final.get("provider_error_status"),
+            provider_error_code=final.get("provider_error_code"),
+            provider_error_detail=final.get("provider_error_detail"),
             usage_status=final.get("usage_status"),
         )
 
@@ -937,45 +1144,29 @@ def analyze_manuscript(options: RunOptions, *, event_sink: EventSink | None = No
             intake_contract_version=intake.contract_version,
             complete_structure=intake.complete_structure,
             heading_count=intake.heading_count,
+            advisory_codes=list(intake.advisory_codes),
         )
         state = _base_state(document, options, intake)
         initial_harness = harness_receipt(intake, budgets)
 
-        if not options.confirm_complete_current_manuscript or not state["critical_basis_available"]:
+        if not state["critical_basis_available"]:
             sink.transition(RunPhase.VALIDATING)
-            gate_item = sink.item_started("intake_gate", "Return fail-closed UNASSESSED intake state")
-            result = _finish(
+            gate_item = sink.item_started("intake_gate", "Block locally unusable empty text before provider routing")
+            error = HarnessContractError("local technical preflight found no effective text")
+            result = _hold_result(
                 document,
                 state,
                 sink,
-                provider=None,
-                model=None,
-                reasoning_option=None,
-                harness_state=initial_harness,
-                run_status=_status(
-                    machine_status="HOLD",
-                    presentation_status="NOT_STARTED",
-                    terminal_status="HOLD",
-                    recoverability="NONE",
-                    machine_provider_outcome="NOT_CALLED",
-                    presentation_provider_outcome="NOT_CALLED",
-                    usage_status_value="UNKNOWN",
-                ),
-                machine_receipt={
-                    "contract_version": "mrc-machine-receipt-2.0",
-                    "status": "HOLD",
-                    "failed_stage": "intake_gate",
-                    "error_code": "UNASSESSED_INTAKE",
-                    "contradiction_gate_passed": False,
-                },
-                presentation_receipt={
-                    "transaction_version": PRESENTATION_TRANSACTION_VERSION,
-                    "status": "NOT_STARTED",
-                    "repair_attempted": False,
-                    "presentation_provider_outcome": "NOT_CALLED",
-                },
+                options=options,
+                provider_receipts=provider_receipts,
+                attempts=len(attempts),
+                intake=intake,
+                budgets=budgets,
+                coverage=None,
+                failed_stage="local_preflight",
+                error=error,
             )
-            sink.item_completed(gate_item, "intake_gate", verdict="UNASSESSED")
+            sink.item_completed(gate_item, "intake_gate", verdict="UNASSESSED", api_called=False)
             sink.complete(
                 verdict="UNASSESSED",
                 machine_status="HOLD",
@@ -1018,15 +1209,115 @@ def analyze_manuscript(options: RunOptions, *, event_sink: EventSink | None = No
                 )
                 return result
 
-        if options.transient_retries != 0:
-            raise ProviderConfigurationError(
-                "automatic full-request retries are disabled; transient_retries must be zero"
+        try:
+            if options.transient_retries != 0:
+                raise ProviderConfigurationError(
+                    "automatic full-request retries are disabled; transient_retries must be zero"
+                )
+            provider_spec, selected_model = resolve_provider_selection(
+                options.provider,
+                model=options.model,
             )
-        config = load_provider_config(options.provider, model=options.model)
-        reasoning_option = validate_reasoning_option(config.name, config.model, options.reasoning_option)
-        current_provider = config.name
-        current_model = config.model
+            reasoning_option = validate_reasoning_option(
+                provider_spec.name,
+                selected_model,
+                options.reasoning_option,
+            )
+        except ProviderConfigurationError as exc:
+            sink.transition(RunPhase.VALIDATING)
+            result = _hold_result(
+                document,
+                state,
+                sink,
+                options=options,
+                provider_receipts=provider_receipts,
+                attempts=len(attempts),
+                intake=intake,
+                budgets=budgets,
+                coverage=None,
+                failed_stage="provider_configuration",
+                error=exc,
+            )
+            sink.complete(verdict="UNASSESSED", terminal_status="HOLD", usage={})
+            return result
+        current_provider = provider_spec.name
+        current_model = selected_model
         current_reasoning = reasoning_option
+        consent_authorized, consent_receipt = _provider_transmission_consent_receipt(
+            options.provider_transmission_consent,
+            artifact_sha256=document.artifact_sha256,
+            provider=provider_spec.name,
+            model=selected_model,
+        )
+        state["provider_transmission_consent_receipt"] = consent_receipt
+        state["provider_transmission_authorized"] = consent_authorized
+        if not consent_authorized:
+            sink.transition(RunPhase.VALIDATING)
+            consent_item = sink.item_started(
+                "provider_consent",
+                "Stop because provider transmission was not authorized for this run",
+            )
+            result = _finish(
+                document,
+                state,
+                sink,
+                provider=provider_spec.name,
+                model=selected_model,
+                reasoning_option=reasoning_option,
+                harness_state=initial_harness,
+                run_status=_status(
+                    machine_status="NOT_STARTED",
+                    presentation_status="NOT_STARTED",
+                    terminal_status="CANCELED",
+                    recoverability="USER_CONFIRMATION_REQUIRED",
+                    machine_provider_outcome="NOT_CALLED",
+                    presentation_provider_outcome="NOT_CALLED",
+                    usage_status_value="UNKNOWN",
+                ),
+                machine_receipt={
+                    "contract_version": "mrc-machine-receipt-3.0",
+                    "status": "NOT_STARTED",
+                    "reason_category": "USER_PROVIDER_TRANSMISSION_NOT_AUTHORIZED",
+                    "error_code": "USER_PROVIDER_TRANSMISSION_NOT_AUTHORIZED",
+                    "contradiction_gate_passed": False,
+                    "authoritative_presentation_source": None,
+                    "provider_transmission_consent": consent_receipt,
+                },
+                presentation_receipt={
+                    "transaction_version": PRESENTATION_TRANSACTION_VERSION,
+                    "status": "NOT_STARTED",
+                    "repair_attempted": False,
+                    "presentation_provider_outcome": "NOT_CALLED",
+                },
+            )
+            sink.item_completed(consent_item, "provider_consent", status="not_authorized")
+            sink.complete(
+                verdict="UNASSESSED",
+                machine_status="NOT_STARTED",
+                presentation_status="NOT_STARTED",
+                terminal_status="CANCELED",
+                usage={},
+            )
+            return result
+        try:
+            config = load_provider_config(options.provider, model=selected_model)
+        except ProviderConfigurationError as exc:
+            sink.transition(RunPhase.VALIDATING)
+            result = _hold_result(
+                document,
+                state,
+                sink,
+                options=options,
+                provider_receipts=provider_receipts,
+                attempts=len(attempts),
+                intake=intake,
+                budgets=budgets,
+                coverage=None,
+                failed_stage="provider_configuration",
+                error=exc,
+            )
+            sink.complete(verdict="UNASSESSED", terminal_status="HOLD", usage={})
+            return result
         sink.transition(RunPhase.REQUESTING_MODEL)
 
         current_stage = "coverage"
@@ -1090,6 +1381,30 @@ def analyze_manuscript(options: RunOptions, *, event_sink: EventSink | None = No
                 budget=coverage_budget,
                 stage="coverage",
             )
+        except SchemaDefinitionError as exc:
+            sink.item_completed(
+                coverage_item,
+                "coverage_request",
+                status="hold",
+                error_code="SCHEMA_DEFINITION_INVALID",
+                request_dispatched=False,
+            )
+            sink.transition(RunPhase.VALIDATING)
+            result = _hold_result(
+                document,
+                state,
+                sink,
+                options=options,
+                provider_receipts=provider_receipts,
+                attempts=len(attempts),
+                intake=intake,
+                budgets=budgets,
+                coverage=None,
+                failed_stage="coverage_schema_definition",
+                error=exc,
+            )
+            sink.complete(verdict="UNASSESSED", terminal_status="HOLD", usage={})
+            return result
         except ProviderRequestError as exc:
             stage_receipt = _provider_receipt_failed(
                     "coverage",
@@ -1157,6 +1472,91 @@ def analyze_manuscript(options: RunOptions, *, event_sink: EventSink | None = No
             )
             sink.complete(verdict="UNASSESSED", terminal_status="HOLD", usage=result.usage)
             return result
+        basis_receipt = {
+            "whole_manuscript_basis": coverage["whole_manuscript_basis"],
+            "basis_reason_codes": list(coverage["basis_reason_codes"]),
+            "basis_explanation": coverage["basis_explanation"],
+            "basis_contract_version": MANUSCRIPT_BASIS_CONTRACT_VERSION,
+        }
+        state["whole_manuscript_basis"] = coverage["whole_manuscript_basis"]
+        state["whole_manuscript_basis_reason_codes"] = list(coverage["basis_reason_codes"])
+        state["whole_manuscript_basis_explanation"] = coverage["basis_explanation"]
+        stage_receipt.update(deepcopy(basis_receipt))
+        for physical_receipt in stage_receipt.get("physical_request_receipts", []):
+            if isinstance(physical_receipt, dict):
+                physical_receipt.update(deepcopy(basis_receipt))
+        if coverage["whole_manuscript_basis"] == "INSUFFICIENT":
+            state["manuscript_complete"] = False
+            state["whole_manuscript_read"] = False
+            state["critical_basis_available"] = False
+            state["bounded_scope"] = True
+            sink.item_completed(
+                coverage_item,
+                "coverage_request",
+                provider=config.name,
+                model=coverage_completion.model,
+                attempts=sum(stage == "coverage" for stage, _number in attempts),
+                usage=coverage_completion.usage,
+                coverage_contract_version=COVERAGE_CONTRACT_VERSION,
+                whole_manuscript_basis="INSUFFICIENT",
+                adjudication_requests=0,
+            )
+            sink.transition(RunPhase.VALIDATING)
+            machine_receipt = {
+                "contract_version": "mrc-machine-receipt-3.0",
+                "status": "NOT_FORMED",
+                "reason_category": "INSUFFICIENT_WHOLE_MANUSCRIPT_BASIS",
+                "coverage_digest_sha256": canonical_digest(coverage),
+                "contradiction_gate_passed": False,
+                "authoritative_presentation_source": None,
+                "authoritative_candidate_state": False,
+                "provider_transmission_consent": deepcopy(consent_receipt),
+                **deepcopy(basis_receipt),
+            }
+            run_status = _status(
+                machine_status="NOT_FORMED",
+                presentation_status="NOT_STARTED",
+                terminal_status="HOLD",
+                recoverability="NEW_WHOLE_MANUSCRIPT_BASIS_REQUIRED",
+                machine_provider_outcome="SUCCEEDED",
+                presentation_provider_outcome="NOT_CALLED",
+                usage_status_value=_usage_status_for_receipts(provider_receipts),
+            )
+            result = _finish(
+                document,
+                state,
+                sink,
+                provider=config.name,
+                model=coverage_completion.model,
+                reasoning_option=reasoning_option,
+                provider_receipts=provider_receipts,
+                attempts=len(attempts),
+                harness_state=harness_receipt(
+                    intake,
+                    budgets,
+                    coverage=coverage,
+                    adjudication_bound=False,
+                    contradiction_gate_passed=False,
+                ),
+                run_status=run_status,
+                machine_receipt=machine_receipt,
+                presentation_receipt={
+                    "transaction_version": PRESENTATION_TRANSACTION_VERSION,
+                    "status": "NOT_STARTED",
+                    "repair_attempted": False,
+                    "presentation_provider_outcome": "NOT_CALLED",
+                    "usage": {},
+                    "usage_status": "UNKNOWN",
+                },
+            )
+            sink.complete(
+                verdict="UNASSESSED",
+                machine_status="NOT_FORMED",
+                presentation_status="NOT_STARTED",
+                terminal_status="HOLD",
+                usage=result.usage,
+            )
+            return result
         coverage["submission_hold_codes"] = list(
             dict.fromkeys([*coverage["submission_hold_codes"], *document.submission_hold_codes])
         )
@@ -1190,7 +1590,46 @@ def analyze_manuscript(options: RunOptions, *, event_sink: EventSink | None = No
             sink.complete(verdict="UNASSESSED", terminal_status="HOLD", usage=result.usage)
             return result
 
-        adjudication_schema = build_adjudication_json_schema(coverage)
+        schema_item = sink.item_started(
+            "adjudication_schema_definition",
+            "Build and lint the coverage-bound adjudication schema before dispatch",
+            provider=config.name,
+            model=config.model,
+            request_dispatched=False,
+        )
+        try:
+            adjudication_schema = build_adjudication_json_schema(coverage)
+        except SchemaDefinitionError as exc:
+            sink.item_completed(
+                schema_item,
+                "adjudication_schema_definition",
+                status="hold",
+                error_code="SCHEMA_DEFINITION_INVALID",
+                request_dispatched=False,
+            )
+            sink.transition(RunPhase.VALIDATING)
+            result = _hold_result(
+                document,
+                state,
+                sink,
+                options=options,
+                provider_receipts=provider_receipts,
+                attempts=len(attempts),
+                intake=intake,
+                budgets=budgets,
+                coverage=coverage,
+                failed_stage="adjudication_schema_definition",
+                error=exc,
+            )
+            sink.complete(verdict="UNASSESSED", terminal_status="HOLD", usage=result.usage)
+            return result
+        sink.item_completed(
+            schema_item,
+            "adjudication_schema_definition",
+            status="pass",
+            schema_sha256=schema_sha256(adjudication_schema),
+            request_dispatched=False,
+        )
         frozen_coverage_digest = canonical_digest(coverage)
         adjudication_messages = build_adjudication_messages(
             document.text,
@@ -1256,6 +1695,30 @@ def analyze_manuscript(options: RunOptions, *, event_sink: EventSink | None = No
                 stage="adjudication",
                 coverage_digest=frozen_coverage_digest,
             )
+        except SchemaDefinitionError as exc:
+            sink.item_completed(
+                adjudication_item,
+                "adjudication_request",
+                status="hold",
+                error_code="SCHEMA_DEFINITION_INVALID",
+                request_dispatched=False,
+            )
+            sink.transition(RunPhase.VALIDATING)
+            result = _hold_result(
+                document,
+                state,
+                sink,
+                options=options,
+                provider_receipts=provider_receipts,
+                attempts=len(attempts),
+                intake=intake,
+                budgets=budgets,
+                coverage=coverage,
+                failed_stage="adjudication_schema_definition",
+                error=exc,
+            )
+            sink.complete(verdict="UNASSESSED", terminal_status="HOLD", usage=result.usage)
+            return result
         except ProviderRequestError as exc:
             stage_receipt = _provider_receipt_failed(
                     "adjudication",
@@ -1314,13 +1777,13 @@ def analyze_manuscript(options: RunOptions, *, event_sink: EventSink | None = No
             except HarnessContractError as schema_error:
                 diagnostic = getattr(schema_error, "contract_receipt", None)
                 if isinstance(diagnostic, dict) and isinstance(envelope.get("material_root_causes"), list):
-                    candidate_diagnostic = candidate_exact_set_receipt(coverage, envelope)
-                    diagnostic["candidate_exact_set_contract_version"] = candidate_diagnostic.pop(
+                    candidate_diagnostic = candidate_binding_receipt(coverage, envelope)
+                    diagnostic["candidate_binding_contract_version"] = candidate_diagnostic.pop(
                         "contract_version"
                     )
                     diagnostic.update(candidate_diagnostic)
                 raise
-            validate_candidate_exact_set(coverage, envelope)
+            validate_candidate_binding(coverage, envelope)
             finite_state = validate_adjudication_binding(envelope, coverage)
             model_state = validate_model_state(finite_state)
         except (ModelContractError, HarnessContractError) as exc:
@@ -1370,6 +1833,7 @@ def analyze_manuscript(options: RunOptions, *, event_sink: EventSink | None = No
         )
         try:
             validate_cross_stage_consistency(coverage, model_state)
+            stop_gate_receipt = affirmative_stop_gate_receipt(coverage, model_state)
         except HarnessContractError as exc:
             sink.item_completed(contradiction_item, "contradiction_gate", status="hold", error_code=type(exc).__name__)
             result = _hold_result(
@@ -1396,6 +1860,7 @@ def analyze_manuscript(options: RunOptions, *, event_sink: EventSink | None = No
             return result
 
         state.update(deepcopy(model_state))
+        state["affirmative_stop_gate_passed"] = bool(stop_gate_receipt["stop_eligible"])
         state["submission_hold_codes"] = list(
             dict.fromkeys([*model_state["submission_hold_codes"], *document.submission_hold_codes])
         )

@@ -1,4 +1,4 @@
-"""Native presentation transaction for Manuscript Revision Closure 0.6.3.
+"""Native presentation transaction for Manuscript Revision Closure 0.6.4.
 
 The machine adjudication remains authoritative.  This module receives only the
 finite model-authored fields that are already eligible for the public Closure
@@ -38,7 +38,7 @@ from .providers import (
 PRESENTATION_TRANSACTION_VERSION = "mrc-presentation-transaction-1.0"
 PRESENTATION_SOURCE_CONTRACT_VERSION = "mrc-presentation-source-2.0"
 PRESENTATION_REPAIR_CONTRACT_VERSION = "mrc-presentation-repair-2.0"
-MACHINE_STATE_CONTRACT_VERSION = "mrc-machine-state-1.0"
+MACHINE_STATE_CONTRACT_VERSION = "mrc-machine-state-2.0"
 LANGUAGE_CONTRACT_VERSION = "mrc-zh-display-language-1.0"
 
 _DISPLAY_FIELDS = ("Direction", "Why it matters", "What to protect")
@@ -52,6 +52,8 @@ _MACHINE_KEYS = (
     "current_artifact_sha256",
     "current_semantic_content_sha256",
     "material_root_causes",
+    "affirmative_sufficiency",
+    "affirmative_stop_gate_passed",
     "evidence_hold_codes",
     "submission_hold_codes",
     "protected",

@@ -14,3 +14,4 @@ release/
 *.spec
 __pycache__/
 *.py[cod]
+docs/MRC_0.6.3_UNIFIED_PROVIDER_CONTRACT_STATE_REPAIR_GOAL.zh-CN.md

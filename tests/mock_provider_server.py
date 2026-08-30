@@ -10,6 +10,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from standalone.harness import (
+    AFFIRMATIVE_STOP_DIMENSIONS,
     COVERAGE_CONTRACT_VERSION,
     COVERAGE_DIMENSIONS,
     canonical_digest,
@@ -17,6 +18,9 @@ from standalone.harness import (
 
 COVERAGE_STATE = {
     "coverage_contract_version": COVERAGE_CONTRACT_VERSION,
+    "whole_manuscript_basis": "SUFFICIENT",
+    "basis_reason_codes": ["SUFFICIENT_SUBSTANTIVE_WHOLE_MANUSCRIPT"],
+    "basis_explanation": "The supplied text contains sufficient substantive whole-manuscript material.",
     "manuscript_identity_confirmed": True,
     "full_span_covered": True,
     "dimensions": [
@@ -25,6 +29,8 @@ COVERAGE_STATE = {
             "applicability": "APPLICABLE",
             "assessed": True,
             "status": "CLEAR",
+            "affirmative_sufficiency": True,
+            "sufficiency_reason_code": "AFFIRMATIVE_MANUSCRIPT_SUPPORT",
         }
         for dimension in COVERAGE_DIMENSIONS
     ],
@@ -41,6 +47,16 @@ COVERAGE_STATE = {
 ADJUDICATION_STATE = {
     "coverage_digest_sha256": canonical_digest(COVERAGE_STATE),
     "material_root_causes": [],
+    "affirmative_sufficiency": [
+        {
+            "dimension": dimension,
+            "assessed": True,
+            "affirmative_sufficiency": True,
+            "unresolved_material_concern": False,
+            "sufficiency_reason_code": "AFFIRMATIVE_MANUSCRIPT_SUPPORT",
+        }
+        for dimension in AFFIRMATIVE_STOP_DIMENSIONS
+    ],
     "evidence_hold_codes": [],
     "submission_hold_codes": [],
     "protected": ["保持论点上限和可见的替代解释。"],

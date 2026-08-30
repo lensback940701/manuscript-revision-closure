@@ -49,7 +49,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--confirm-complete",
         action="store_true",
-        help="Affirm that the input is the complete identifiable current manuscript; otherwise returns UNASSESSED without an API call",
+        help="Legacy user statement retained for receipt compatibility; it does not gate provider routing",
+    )
+    parser.add_argument(
+        "--consent-to-provider-transmission",
+        action="store_true",
+        help=(
+            "Explicitly authorize this invocation to send the selected full text to the bound provider/model; "
+            "default is refusal and every new invocation must confirm again"
+        ),
     )
     parser.add_argument("--prior-receipt", help="Optional prior minimal receipt JSON")
     parser.add_argument("--output", help="Explicitly write the public card and minimal receipt JSON to this path")
@@ -90,6 +98,7 @@ def run_cli(argv: list[str]) -> int:
                 prior_receipt=prior,
                 timeout_seconds=args.timeout,
                 transient_retries=args.transient_retries,
+                provider_transmission_consent=args.consent_to_provider_transmission,
             ),
             event_sink=sink,
         )

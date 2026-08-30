@@ -48,6 +48,7 @@ class ClosureStateTests(unittest.TestCase):
             "bounded_scope": False,
             "current_manuscript_identity": "synthetic-manuscript-1",
             "material_root_causes": [],
+            "affirmative_stop_gate_passed": True,
             "evidence_holds": [],
             "submission_holds": [],
             "external_holds": [],
